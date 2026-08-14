@@ -7,6 +7,7 @@ import { setupFollowsPanel, setupPriorityEditor } from "./follows.js";
 import { setupTokenTools } from "./tokens.js";
 import { setupDebugPanel } from "./debug.js";
 import { setupChangelogTab } from "./changelog.js";
+import { setupStreakRescuePanel } from "./streaks.js";
 
 async function init() {
   setupTabs();
@@ -17,6 +18,7 @@ async function init() {
   setupTokenTools();
   setupDebugPanel();
   setupChangelogTab();
+  setupStreakRescuePanel();
 
   await showManifestVersion();
   await loadUI();

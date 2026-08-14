@@ -6,6 +6,14 @@ import { fetchMyFollows } from "./follows.js";
 import { getPlayerStatus, rememberPlayerStatus, repokeManagedTabs, pokeChannelTab, scheduleTabRepokes } from "./player.js";
 import { poll, bootOnce } from "./poll.js";
 import {
+  handleStreakScan,
+  handleStreakPlayback,
+  runStreakRescueTick,
+  getStreakRescueStatus,
+  initStreakRescue,
+  onTwitchTabComplete
+} from "./streaks.js";
+import {
   isManagerEnabled,
   closeSenderTabIfNowUnwanted,
   clearOfflineTimer,
@@ -37,6 +45,10 @@ const ACCEPTED_TYPES = [
   "TTM_GET_LOGS",
   "TTM_PLAYER_STATUS",
   "TTM_CLEAR_LOGS",
+  "TTM_STREAK_SCAN",
+  "TTM_STREAK_PLAYBACK",
+  "ttm/streak_status",
+  "ttm/streak_tick",
   "channel_status",
   "ttm/temp_allow_channel",
   "TTM_TEMP_ALLOW_CHANNEL",
@@ -47,12 +59,16 @@ chrome.runtime.onInstalled.addListener((details) => {
   T.maybeShowUpdateNotification(details);
 
   globalThis.__TTM_BG_BOOTED__ = false;
-  T.bootOnce().catch((e) => T.log?.("boot_err", String(e)));
+  T.bootOnce()
+    .then(() => initStreakRescue())
+    .catch((e) => T.log?.("boot_err", String(e)));
 });
 
 chrome.runtime.onStartup?.addListener(() => {
   globalThis.__TTM_BG_BOOTED__ = false;
-  T.bootOnce().catch((e) => T.log?.("boot_err", String(e)));
+  T.bootOnce()
+    .then(() => initStreakRescue())
+    .catch((e) => T.log?.("boot_err", String(e)));
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -65,14 +81,17 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
   if (alarm?.name === T.TTM_REPOKE_ALARM) {
     repokeManagedTabs().catch((e) => T.log?.("alarm_repoke_error", String(e)));
+    runStreakRescueTick().catch((e) => T.log?.("streak_tick_error", String(e)));
   }
 });
 
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
   if (info.status !== "complete") return;
-  if (!T.isChannelUrl?.(tab?.url)) return;
   if (!isManagerEnabled()) return;
 
+  onTwitchTabComplete(tabId, tab?.url || tab?.pendingUrl || "").catch(() => {});
+
+  if (!T.isChannelUrl?.(tab?.url)) return;
   pokeChannelTab(tabId).catch(() => {});
   scheduleTabRepokes(tabId);
 });
@@ -122,6 +141,7 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
     if (kind === "reload") {
       await loadSettings();
       await ensureAlarm();
+      await runStreakRescueTick();
 
       let adoptedInfo = { adopted: 0, total: 0 };
       if (isManagerEnabled()) {
@@ -227,6 +247,23 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
       return void send({ ok: true });
     }
 
+    if (kind === "ttm_streak_scan") {
+      return void send(await handleStreakScan(msg, sender));
+    }
+
+    if (kind === "ttm_streak_playback") {
+      return void send(await handleStreakPlayback(msg, sender));
+    }
+
+    if (kind === "ttm/streak_status") {
+      return void send({ ok: true, status: await getStreakRescueStatus() });
+    }
+
+    if (kind === "ttm/streak_tick") {
+      await runStreakRescueTick();
+      return void send({ ok: true, status: await getStreakRescueStatus() });
+    }
+
     if (kind === "channel_status") {
       if (!isManagerEnabled()) {
         return void send({ ok: true, ignored: "disabled" });
@@ -292,4 +329,6 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
   return true;
 });
 
-bootOnce().catch((e) => T.log?.("boot_err", String(e)));
+bootOnce()
+  .then(() => initStreakRescue())
+  .catch((e) => T.log?.("boot_err", String(e)));

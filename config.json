@@ -12,7 +12,22 @@
   "followUnion": [],
   "follows": [],
   "priority": [],
+  "blacklist": [],
+  "favorites": [],
+  "rotation": [],
+  "low_priority": [],
   "soft_wake_tabs": false,
   "soft_wake_only_when_browser_focused": true,
-  "blacklist": []
+  "rotation_enabled": false,
+  "rotation_interval_min": 30,
+  "rotation_slot_count": 1,
+  "rotation_cooldown_min": 30,
+  "rotation_include_low_priority": false,
+  "streak_rescue_enabled": false,
+  "streak_rescue_mode": "detect",
+  "streak_rescue_slots": 1,
+  "streak_rescue_required_watch_min": 5,
+  "streak_rescue_grace_min": 10,
+  "streak_rescue_confirm_check_sec": 30,
+  "streak_rescue_retry_min": 15
 }

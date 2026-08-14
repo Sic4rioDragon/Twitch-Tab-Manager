@@ -17,10 +17,12 @@ const NON_CHANNEL_ROUTES = new Set([
 
 const CHANNEL_KEY = "ttm.managed.channels";
 const OWNED_KEY = "ttm.managed.owned";
+const ROTATION_SLOTS_KEY = "ttm.rotation.slots";
 const OPENING_TTL_MS = 5000;
 
 let managedChannels = {};
 let ownedTabs = {};
+let rotationSlots = {};
 const opening = new Map();
 
 function now() {
@@ -54,16 +56,84 @@ function purgeOpening() {
 }
 
 async function loadManagedState() {
-  const bag = await chrome.storage.session.get([CHANNEL_KEY, OWNED_KEY]);
-  managedChannels = bag?.[CHANNEL_KEY] && typeof bag[CHANNEL_KEY] === "object" ? bag[CHANNEL_KEY] : {};
-  ownedTabs = bag?.[OWNED_KEY] && typeof bag[OWNED_KEY] === "object" ? bag[OWNED_KEY] : {};
+  const bag = await chrome.storage.session.get([CHANNEL_KEY, OWNED_KEY, ROTATION_SLOTS_KEY]);
+
+  managedChannels =
+    bag?.[CHANNEL_KEY] && typeof bag[CHANNEL_KEY] === "object"
+      ? bag[CHANNEL_KEY]
+      : {};
+
+  ownedTabs =
+    bag?.[OWNED_KEY] && typeof bag[OWNED_KEY] === "object"
+      ? bag[OWNED_KEY]
+      : {};
+
+  rotationSlots =
+    bag?.[ROTATION_SLOTS_KEY] && typeof bag[ROTATION_SLOTS_KEY] === "object"
+      ? bag[ROTATION_SLOTS_KEY]
+      : {};
 }
 
 async function saveManagedState() {
   await chrome.storage.session.set({
     [CHANNEL_KEY]: managedChannels,
-    [OWNED_KEY]: ownedTabs
+    [OWNED_KEY]: ownedTabs,
+    [ROTATION_SLOTS_KEY]: rotationSlots
   });
+}
+function getRotationSlot(tabId) {
+  return rotationSlots[String(tabId)] || null;
+}
+
+async function setRotationSlot(tabId, data) {
+  if (!tabId) return;
+
+  rotationSlots[String(tabId)] = {
+    role: "rotation",
+    current_channel: "",
+    last_rotated_at: 0,
+    recently_used: {},
+    ...(rotationSlots[String(tabId)] || {}),
+    ...(data || {})
+  };
+
+  await saveManagedState();
+}
+
+async function clearRotationSlot(tabId) {
+  if (!tabId) return;
+  delete rotationSlots[String(tabId)];
+  await saveManagedState();
+}
+
+function wasRecentlyUsedInRotation(tabId, channel, cooldownMin = 30) {
+  const slot = getRotationSlot(tabId);
+  if (!slot) return false;
+
+  const ts = Number(slot.recently_used?.[channel] || 0);
+  if (!ts) return false;
+
+  const cooldownMs = Math.max(5, Number(cooldownMin || 30)) * 60 * 1000;
+  return (Date.now() - ts) < cooldownMs;
+}
+
+async function markRotationChannelUsed(tabId, channel) {
+  const slot = getRotationSlot(tabId) || {
+    role: "rotation",
+    current_channel: "",
+    last_rotated_at: 0,
+    recently_used: {}
+  };
+
+  slot.current_channel = channel || "";
+  slot.last_rotated_at = Date.now();
+  slot.recently_used = {
+    ...(slot.recently_used || {}),
+    [channel]: Date.now()
+  };
+
+  rotationSlots[String(tabId)] = slot;
+  await saveManagedState();
 }
 
 async function rehydrateManagedFromReality() {
@@ -488,6 +558,11 @@ try {
   T.ensureOpen = ensureOpen;
   T.ensureClosed = ensureClosed;
   T.adoptOpenTabs = adoptOpenTabs;
+  T.getRotationSlot = getRotationSlot;
+  T.setRotationSlot = setRotationSlot;
+  T.clearRotationSlot = clearRotationSlot;
+  T.wasRecentlyUsedInRotation = wasRecentlyUsedInRotation;
+  T.markRotationChannelUsed = markRotationChannelUsed;
 
   if (typeof self === "object") {
     self.bgTabs = self.bgTabs || {};

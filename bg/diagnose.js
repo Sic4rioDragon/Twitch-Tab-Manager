@@ -94,6 +94,9 @@ export async function diagnose() {
 
   const liveChannels = Array.isArray(state.lastLive) ? state.lastLive.slice() : [];
   const trackedOpenChannels = Array.isArray(state.openChannels) ? state.openChannels.slice() : [];
+  const streakRescue = typeof T.getStreakRescueStatus === "function"
+    ? await T.getStreakRescueStatus()
+    : null;
 
   const managedOpenDetails = managedOpen.map((t) => ({
     id: t.id,
@@ -136,6 +139,12 @@ export async function diagnose() {
       close_unfollowed_tabs: s.close_unfollowed_tabs,
       allow_extra_twitch_tabs: s.allow_extra_twitch_tabs,
       temp_whitelist_hours: s.temp_whitelist_hours,
+      streak_rescue_enabled: s.streak_rescue_enabled,
+      streak_rescue_mode: s.streak_rescue_mode,
+      streak_rescue_required_watch_min: s.streak_rescue_required_watch_min,
+      streak_rescue_grace_min: s.streak_rescue_grace_min,
+      streak_rescue_confirm_check_sec: s.streak_rescue_confirm_check_sec,
+      streak_rescue_retry_min: s.streak_rescue_retry_min,
       follows_count: Array.isArray(s.follows) ? s.follows.length : 0,
       priority_count: Array.isArray(s.priority) ? s.priority.length : 0,
       followUnion_count: Array.isArray(s.followUnion) ? s.followUnion.length : 0,
@@ -156,6 +165,7 @@ export async function diagnose() {
     all_open_twitch_tabs: allOpenTwitchTabs,
     capacity: Math.max(0, (Number(s.max_tabs || 0) || 0) - managedOpen.length),
     stalled_tabs: stalledTabs,
+    streak_rescue: streakRescue,
     logs: Array.isArray(state.logs) ? state.logs.slice(-100) : []
   };
 }

@@ -33,7 +33,7 @@ async function injectHelpers(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["content_unmute.js", "content_status.js"]
+      files: ["content_unmute.js", "content_status.js", "content_streaks.js"]
     });
   } catch {}
 }

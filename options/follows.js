@@ -38,6 +38,156 @@ async function readFollowSyncHistory() {
   };
 }
 
+function getBucketMapFromConfig(cfg) {
+  return {
+    favorites: uniqNames(cfg.favorites || []),
+    priority: uniqNames(cfg.priority || []),
+    follows: uniqNames(cfg.follows || []),
+    rotation: uniqNames(cfg.rotation || []),
+    low_priority: uniqNames(cfg.low_priority || []),
+    blacklist: uniqNames(cfg.blacklist || [])
+  };
+}
+
+function findChannelBucket(channel, bucketMap) {
+  const ch = String(channel || "").trim().toLowerCase();
+  if (!ch) return "";
+
+  for (const [bucket, list] of Object.entries(bucketMap)) {
+    if (list.includes(ch)) return bucket;
+  }
+
+  return "";
+}
+
+const EXCLUSIVE_BUCKETS = ["favorites", "priority", "rotation", "low_priority", "blacklist"];
+
+function validateExclusiveBuckets(bucketMap) {
+  const seen = new Map();
+
+  // The normal Follows list is the base Twitch-follow list and is allowed to
+  // overlap with one special bucket. The special bucket decides hierarchy.
+  for (const bucket of EXCLUSIVE_BUCKETS) {
+    const list = uniqNames(bucketMap?.[bucket] || []);
+    for (const ch of list) {
+      if (seen.has(ch)) {
+        return {
+          ok: false,
+          channel: ch,
+          first: seen.get(ch),
+          second: bucket
+        };
+      }
+      seen.set(ch, bucket);
+    }
+  }
+
+  return { ok: true };
+}
+
+function buildBucketMapFromInputs(cfg, overrides = {}) {
+  return {
+    favorites: uniqNames(overrides.favorites ?? cfg.favorites ?? []),
+    priority: uniqNames(overrides.priority ?? cfg.priority ?? []),
+    follows: uniqNames(overrides.follows ?? cfg.follows ?? []),
+    rotation: uniqNames(overrides.rotation ?? cfg.rotation ?? []),
+    low_priority: uniqNames(overrides.low_priority ?? cfg.low_priority ?? []),
+    blacklist: uniqNames(overrides.blacklist ?? cfg.blacklist ?? [])
+  };
+}
+
+function buildFollowUnionFromBucketMap(bucketMap) {
+  return uniqNames([
+    ...(bucketMap.favorites || []),
+    ...(bucketMap.priority || []),
+    ...(bucketMap.follows || []),
+    ...(bucketMap.rotation || []),
+    ...(bucketMap.low_priority || [])
+  ]);
+}
+
+function bucketLabel(bucket) {
+  return String(bucket || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function showBucketConflict(statusEl, validation) {
+  err(
+    statusEl,
+    `Channel "${validation.channel}" is already in ${bucketLabel(validation.first)} and cannot also be in ${bucketLabel(validation.second)}. It can still remain in the normal Follows list.`
+  );
+}
+
+function ensureAdvancedBucketsUI() {
+  if ($("#advancedBucketsWrap")) return;
+
+  const fol = $("#fol");
+  if (!fol || !fol.parentElement) return;
+
+  const wrap = document.createElement("div");
+  wrap.id = "advancedBucketsWrap";
+  wrap.style.marginTop = "16px";
+
+  wrap.innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <h4>Favorites</h4>
+        <p class="small">Favorites are your highest-priority channels. When live, they should be preferred above all other normal channel groups and should not be rotated out.</p>
+        <textarea id="favoritesBox" class="miniTA" placeholder="one username per line"></textarea>
+      </div>
+
+      <div class="card">
+        <h4>Rotation</h4>
+        <p class="small">Rotation channels use dedicated rotation slots. They do not take over your stable favorites / priority slots.</p>
+        <textarea id="rotationBox" class="miniTA" placeholder="one username per line"></textarea>
+      </div>
+
+      <div class="card">
+        <h4>Low Priority</h4>
+        <p class="small">Low priority channels only open if there are free slots left after favorites, priority channels, normal followed channels, and rotation decisions. They are the first channels to lose a slot when something more important goes live.</p>
+        <textarea id="lowPriorityBox" class="miniTA" placeholder="one username per line"></textarea>
+      </div>
+
+      <div class="card">
+        <h4>Rotation Settings</h4>
+        <label class="field">
+          <span class="label-title">Enable rotation</span>
+          <select id="rotationEnabled">
+            <option value="false">Disabled</option>
+            <option value="true">Enabled</option>
+          </select>
+        </label>
+
+        <label class="field" style="margin-top:10px;">
+          <span class="label-title">Rotation interval (minutes)</span>
+          <input id="rotationIntervalMin" type="number" min="5" step="1" />
+        </label>
+
+        <label class="field" style="margin-top:10px;">
+          <span class="label-title">Dedicated rotation slots</span>
+          <input id="rotationSlotCount" type="number" min="0" step="1" />
+        </label>
+
+        <label class="field" style="margin-top:10px;">
+          <span class="label-title">Rotation cooldown (minutes)</span>
+          <input id="rotationCooldownMin" type="number" min="5" step="1" />
+        </label>
+
+        <label class="field" style="margin-top:10px;">
+          <span class="label-title">Include low priority in rotation</span>
+          <select id="rotationIncludeLowPriority">
+            <option value="false">No</option>
+            <option value="true">Yes</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  `;
+
+  fol.parentElement.appendChild(wrap);
+}
+
 async function pushFollowSyncHistory(entry) {
   const got = await chrome.storage.local.get([FOLLOW_SYNC_HISTORY_KEY]);
   const history = Array.isArray(got[FOLLOW_SYNC_HISTORY_KEY]) ? got[FOLLOW_SYNC_HISTORY_KEY] : [];
@@ -78,19 +228,46 @@ async function refreshFollowSyncHistoryUI() {
   renderFollowSyncHistory(last);
 }
 
+function populateAdvancedBucketsUI(cfg) {
+  if ($("#favoritesBox")) $("#favoritesBox").value = (cfg.favorites || []).join("\n");
+  if ($("#rotationBox")) $("#rotationBox").value = (cfg.rotation || []).join("\n");
+  if ($("#lowPriorityBox")) $("#lowPriorityBox").value = (cfg.low_priority || []).join("\n");
+
+  if ($("#rotationEnabled")) $("#rotationEnabled").value = String(!!cfg.rotation_enabled);
+  if ($("#rotationIntervalMin")) $("#rotationIntervalMin").value = String(cfg.rotation_interval_min ?? 30);
+  if ($("#rotationSlotCount")) $("#rotationSlotCount").value = String(cfg.rotation_slot_count ?? 1);
+  if ($("#rotationCooldownMin")) $("#rotationCooldownMin").value = String(cfg.rotation_cooldown_min ?? 30);
+  if ($("#rotationIncludeLowPriority")) {
+    $("#rotationIncludeLowPriority").value = String(!!cfg.rotation_include_low_priority);
+  }
+}
+
 export function setupFollowsPanel() {
   ensureFollowSyncHistoryUI();
+  ensureAdvancedBucketsUI();
   refreshFollowSyncHistoryUI().catch(() => {});
 
-  $("#saveFol")?.addEventListener("click", async () => {
+    readStorage()
+    .then((bag) => {
+      const cfg = getStoredConfig(bag);
+      populateAdvancedBucketsUI(cfg);
+    })
+    .catch(() => {});
+
+    $("#saveFol")?.addEventListener("click", async () => {
     try {
       const bag = await readStorage();
       const cfg = getStoredConfig(bag);
       const follows = uniqNames((folTA()?.value || "").split("\n"));
+
+      // Follows is the base list from Twitch, so channels are allowed to also
+      // exist in one special bucket such as Favorites or Priority.
+      const bucketMap = buildBucketMapFromInputs(cfg, { follows });
+
       const clean = await writeConfigEverywhere(clampConfig({
         ...cfg,
         follows,
-        followUnion: uniqNames([...follows, ...(cfg.priority || [])])
+        followUnion: buildFollowUnionFromBucketMap(bucketMap)
       }));
 
       if (folTA()) folTA().value = clean.follows.join("\n");
@@ -133,6 +310,13 @@ export function setupFollowsPanel() {
 
   $("#refreshFol")?.addEventListener("click", async () => {
     await loadUI();
+
+    try {
+      const bag = await readStorage();
+      const cfg = getStoredConfig(bag);
+      populateAdvancedBucketsUI(cfg);
+    } catch {}
+
     await refreshFollowSyncHistoryUI();
     ok($("#folStatus"), "Follows refreshed from storage.");
   });
@@ -187,6 +371,114 @@ export function setupFollowsPanel() {
     if (resp?.ok) ok($("#folStatus"), "Config reloaded in background.");
     else err($("#folStatus"), resp?.error || "Reload config failed.");
   });
+
+  $("#favoritesBox")?.addEventListener("change", async () => {
+    try {
+      const bag = await readStorage();
+      const cfg = getStoredConfig(bag);
+      const favorites = uniqNames(($("#favoritesBox")?.value || "").split("\n"));
+
+      const bucketMap = buildBucketMapFromInputs(cfg, { favorites });
+      const validation = validateExclusiveBuckets(bucketMap);
+      if (!validation.ok) {
+        showBucketConflict($("#folStatus"), validation);
+        return;
+      }
+
+      const clean = await writeConfigEverywhere(clampConfig({
+        ...cfg,
+        favorites,
+        followUnion: buildFollowUnionFromBucketMap(bucketMap)
+      }));
+
+      $("#favoritesBox").value = clean.favorites.join("\n");
+      if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
+      ok($("#folStatus"), "Favorites saved.");
+    } catch (e) {
+      err($("#folStatus"), `Favorites save failed: ${e.message || e}`);
+    }
+  });
+
+  $("#rotationBox")?.addEventListener("change", async () => {
+    try {
+      const bag = await readStorage();
+      const cfg = getStoredConfig(bag);
+      const rotation = uniqNames(($("#rotationBox")?.value || "").split("\n"));
+
+      const bucketMap = buildBucketMapFromInputs(cfg, { rotation });
+      const validation = validateExclusiveBuckets(bucketMap);
+      if (!validation.ok) {
+        showBucketConflict($("#folStatus"), validation);
+        return;
+      }
+
+      const clean = await writeConfigEverywhere(clampConfig({
+        ...cfg,
+        rotation,
+        followUnion: buildFollowUnionFromBucketMap(bucketMap)
+      }));
+
+      $("#rotationBox").value = clean.rotation.join("\n");
+      if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
+      ok($("#folStatus"), "Rotation channels saved.");
+    } catch (e) {
+      err($("#folStatus"), `Rotation save failed: ${e.message || e}`);
+    }
+  });
+
+  $("#lowPriorityBox")?.addEventListener("change", async () => {
+    try {
+      const bag = await readStorage();
+      const cfg = getStoredConfig(bag);
+      const low_priority = uniqNames(($("#lowPriorityBox")?.value || "").split("\n"));
+
+      const bucketMap = buildBucketMapFromInputs(cfg, { low_priority });
+      const validation = validateExclusiveBuckets(bucketMap);
+      if (!validation.ok) {
+        showBucketConflict($("#folStatus"), validation);
+        return;
+      }
+
+      const clean = await writeConfigEverywhere(clampConfig({
+        ...cfg,
+        low_priority,
+        followUnion: buildFollowUnionFromBucketMap(bucketMap)
+      }));
+
+      $("#lowPriorityBox").value = clean.low_priority.join("\n");
+      if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
+      ok($("#folStatus"), "Low priority channels saved.");
+    } catch (e) {
+      err($("#folStatus"), `Low priority save failed: ${e.message || e}`);
+    }
+  });
+
+  const saveRotationSettings = async () => {
+    try {
+      const bag = await readStorage();
+      const cfg = getStoredConfig(bag);
+
+      const clean = await writeConfigEverywhere(clampConfig({
+        ...cfg,
+        rotation_enabled: $("#rotationEnabled")?.value === "true",
+        rotation_interval_min: Number($("#rotationIntervalMin")?.value || cfg.rotation_interval_min || 30),
+        rotation_slot_count: Number($("#rotationSlotCount")?.value || cfg.rotation_slot_count || 1),
+        rotation_cooldown_min: Number($("#rotationCooldownMin")?.value || cfg.rotation_cooldown_min || 30),
+        rotation_include_low_priority: $("#rotationIncludeLowPriority")?.value === "true"
+      }));
+
+      if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
+      ok($("#folStatus"), "Rotation settings saved.");
+    } catch (e) {
+      err($("#folStatus"), `Rotation settings save failed: ${e.message || e}`);
+    }
+  };
+
+  $("#rotationEnabled")?.addEventListener("change", saveRotationSettings);
+  $("#rotationIntervalMin")?.addEventListener("change", saveRotationSettings);
+  $("#rotationSlotCount")?.addEventListener("change", saveRotationSettings);
+  $("#rotationCooldownMin")?.addEventListener("change", saveRotationSettings);
+  $("#rotationIncludeLowPriority")?.addEventListener("change", saveRotationSettings);
 }
 
 export function setupPriorityEditor() {
@@ -196,10 +488,17 @@ export function setupPriorityEditor() {
       const cfg = getStoredConfig(bag);
       const priority = uniqNames(($("#priorityBox")?.value || "").split("\n"));
 
+      const bucketMap = buildBucketMapFromInputs(cfg, { priority });
+      const validation = validateExclusiveBuckets(bucketMap);
+      if (!validation.ok) {
+        showBucketConflict($("#folStatus"), validation);
+        return;
+      }
+
       const clean = await writeConfigEverywhere(clampConfig({
         ...cfg,
         priority,
-        followUnion: uniqNames([...(cfg.follows || []), ...priority])
+        followUnion: buildFollowUnionFromBucketMap(bucketMap)
       }));
 
       if ($("#priorityBox")) $("#priorityBox").value = clean.priority.join("\n");

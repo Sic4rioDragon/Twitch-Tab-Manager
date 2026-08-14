@@ -146,7 +146,7 @@ async function poll({ force = false } = {}) {
         const shouldSkipMassClose =
       debouncedLiveList.length === 0 &&
       managedNow.length > 0 &&
-      consecutiveEmptyLivePolls < 2;
+      consecutiveEmptyLivePolls < 4;
 
     if (shouldSkipMassClose) {
       log("poll_skip_mass_close_once", {

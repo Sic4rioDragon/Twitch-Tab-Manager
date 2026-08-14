@@ -36,7 +36,16 @@ export const DEFAULTS = {
   live_source: "auto",        // "auto" | "helix" | "gql" | "following_html"
   force_unmute: false,
   unmute_streams: false,
-  autoplay_streams: false
+  force_resume: false,
+  autoplay_streams: false,
+
+  streak_rescue_enabled: false,
+  streak_rescue_mode: "detect",
+  streak_rescue_slots: 1,
+  streak_rescue_required_watch_min: 5,
+  streak_rescue_grace_min: 10,
+  streak_rescue_confirm_check_sec: 30,
+  streak_rescue_retry_min: 15
 };
 
 const LS_KEYS = {
@@ -56,9 +65,22 @@ export const state = {
 export function log(type, detail) {
   try {
     const line = { t: new Date().toISOString(), type, detail };
-    state.logs.push(line);
-    if (state.logs.length > 400) state.logs.splice(0, state.logs.length - 400);
-    chrome.storage.local.set({ [LS_KEYS.logs]: state.logs });
+    try {
+    const safeLine =
+      typeof line === "string"
+        ? line.slice(0, 500)
+        : JSON.stringify(line).slice(0, 500);
+
+    state.logs.push(safeLine);
+
+    if (state.logs.length > 150) {
+      state.logs.splice(0, state.logs.length - 150);
+    }
+
+    chrome.storage.local.set({
+      [LS_KEYS.logs]: state.logs
+    }).catch(() => {});
+  } catch {}
 
     let printable = detail;
     if (detail && typeof detail === "object") {

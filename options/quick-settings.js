@@ -5,6 +5,41 @@ function getEditorLines(selector) {
   return uniqNames(($(selector)?.value || "").split("\n"));
 }
 
+function buildHierarchyUnion(cfg, follows, priority, blacklist) {
+  return uniqNames([
+    ...(cfg.favorites || []),
+    ...(priority || []),
+    ...(follows || []),
+    ...(cfg.rotation || []),
+    ...(cfg.low_priority || [])
+  ]);
+}
+
+function validateSpecialBuckets(cfg, priority, blacklist) {
+  const buckets = {
+    favorites: uniqNames(cfg.favorites || []),
+    priority: uniqNames(priority || []),
+    rotation: uniqNames(cfg.rotation || []),
+    low_priority: uniqNames(cfg.low_priority || []),
+    blacklist: uniqNames(blacklist || [])
+  };
+
+  const seen = new Map();
+  for (const [bucket, list] of Object.entries(buckets)) {
+    for (const ch of list) {
+      if (seen.has(ch)) {
+        return { ok: false, channel: ch, first: seen.get(ch), second: bucket };
+      }
+      seen.set(ch, bucket);
+    }
+  }
+  return { ok: true };
+}
+
+function bucketLabel(bucket) {
+  return String(bucket || "").replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
 export function fillQuickSettings(cfg) {
   const liveSource = $("#liveSource");
   const checkInterval = $("#checkIntervalSec");
@@ -83,19 +118,28 @@ export async function saveQuickSettings({ reload = false } = {}) {
       ? getEditorLines("#blacklistBox")
       : uniqNames(Array.isArray(cfg.blacklist) ? cfg.blacklist : []);
 
+    const validation = validateSpecialBuckets(cfg, priority, blacklist);
+    if (!validation.ok) {
+      err(
+        $("#quickStatus"),
+        `Channel "${validation.channel}" is already in ${bucketLabel(validation.first)} and cannot also be in ${bucketLabel(validation.second)}. It can still remain in the normal Follows list.`
+      );
+      return;
+    }
+
     const baseCfg = clampConfig({
       ...cfg,
       follows,
       priority,
       blacklist,
-      followUnion: uniqNames([...follows, ...priority])
+      followUnion: buildHierarchyUnion(cfg, follows, priority, blacklist)
     });
 
     const nextCfg = readQuickSettings(baseCfg);
     nextCfg.follows = follows;
     nextCfg.priority = priority;
     nextCfg.blacklist = blacklist;
-    nextCfg.followUnion = uniqNames([...follows, ...priority]);
+    nextCfg.followUnion = buildHierarchyUnion(nextCfg, follows, priority, blacklist);
     nextCfg.client_id = baseCfg.client_id || "";
     nextCfg.access_token = baseCfg.access_token || "";
     nextCfg.temp_whitelist_entries = baseCfg.temp_whitelist_entries || {};

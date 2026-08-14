@@ -56,10 +56,33 @@ function clampSettings(raw) {
   cfg.client_id = String(cfg.client_id || "");
   cfg.access_token = String(cfg.access_token || "");
 
-  cfg.follows = uniqNames(cfg.follows);
-  cfg.priority = uniqNames(cfg.priority);
-  cfg.followUnion = uniqNames([...(cfg.follows || []), ...(cfg.priority || [])]);
-  cfg.blacklist = uniqNames(cfg.blacklist);
+  cfg.favorites = normalizeBucketList(cfg.favorites);
+  cfg.priority = normalizeBucketList(cfg.priority);
+  cfg.follows = normalizeBucketList(cfg.follows);
+  cfg.rotation = normalizeBucketList(cfg.rotation);
+  cfg.low_priority = normalizeBucketList(cfg.low_priority);
+  cfg.blacklist = normalizeBucketList(cfg.blacklist);
+
+  cfg.rotation_enabled = parseBool(cfg.rotation_enabled, false);
+  cfg.rotation_interval_min = Math.max(5, Number(cfg.rotation_interval_min || 30) || 30);
+  cfg.rotation_slot_count = Math.max(0, Number(cfg.rotation_slot_count || 1) || 1);
+  cfg.rotation_cooldown_min = Math.max(5, Number(cfg.rotation_cooldown_min || 30) || 30);
+  cfg.rotation_include_low_priority = parseBool(cfg.rotation_include_low_priority, false);
+
+  cfg.streak_rescue_enabled = parseBool(cfg.streak_rescue_enabled, false);
+  cfg.streak_rescue_mode = String(cfg.streak_rescue_mode || "detect").toLowerCase() === "auto" ? "auto" : "detect";
+  cfg.streak_rescue_slots = 1;
+  cfg.streak_rescue_required_watch_min = Math.max(5, Number(cfg.streak_rescue_required_watch_min || 5) || 5);
+  cfg.streak_rescue_grace_min = Math.max(0, Number(cfg.streak_rescue_grace_min ?? 10) || 0);
+  cfg.streak_rescue_confirm_check_sec = Math.max(15, Number(cfg.streak_rescue_confirm_check_sec || 30) || 30);
+  cfg.streak_rescue_retry_min = Math.max(5, Number(cfg.streak_rescue_retry_min || 15) || 15);
+
+  const conflicts = validateExclusiveBuckets(cfg);
+  if (conflicts.length > 0) {
+    log("config_bucket_conflicts", { conflicts });
+  }
+
+  cfg.followUnion = buildFollowUnion(cfg);
 
   return cfg;
 }
@@ -121,7 +144,22 @@ function buildLegacyFlatConfig(bag = {}) {
     follows: Array.isArray(bag.follows) ? bag.follows : [],
     priority: Array.isArray(bag.priority) ? bag.priority : [],
     followUnion: Array.isArray(bag.followUnion) ? bag.followUnion : [],
-    blacklist: Array.isArray(bag.blacklist) ? bag.blacklist : []
+    blacklist: Array.isArray(bag.blacklist) ? bag.blacklist : [],
+    favorites: Array.isArray(bag.favorites) ? bag.favorites : [],
+    rotation: Array.isArray(bag.rotation) ? bag.rotation : [],
+    low_priority: Array.isArray(bag.low_priority) ? bag.low_priority : [],
+    rotation_enabled: bag.rotation_enabled,
+    rotation_interval_min: bag.rotation_interval_min,
+    rotation_slot_count: bag.rotation_slot_count,
+    rotation_cooldown_min: bag.rotation_cooldown_min,
+    rotation_include_low_priority: bag.rotation_include_low_priority,
+    streak_rescue_enabled: bag.streak_rescue_enabled,
+    streak_rescue_mode: bag.streak_rescue_mode,
+    streak_rescue_slots: bag.streak_rescue_slots,
+    streak_rescue_required_watch_min: bag.streak_rescue_required_watch_min,
+    streak_rescue_grace_min: bag.streak_rescue_grace_min,
+    streak_rescue_confirm_check_sec: bag.streak_rescue_confirm_check_sec,
+    streak_rescue_retry_min: bag.streak_rescue_retry_min,
   };
 }
 
@@ -152,7 +190,13 @@ function hasMeaningfulBrowserConfig(bag = {}) {
     legacy.access_token,
     legacy.live_source,
     legacy.check_interval_sec,
-    legacy.max_tabs
+    legacy.max_tabs,
+    nested.favorites,
+    nested.rotation,
+    nested.low_priority,
+    legacy.favorites,
+    legacy.rotation,
+    legacy.low_priority
   ].some((v) => v !== undefined && v !== null && String(v) !== "");
 
   return listHasData || scalarHasData;
@@ -227,6 +271,60 @@ async function pushBackupSnapshot(snapshot) {
   return snapshot;
 }
 
+function normalizeBucketList(list) {
+  return uniqNames(list);
+}
+
+function getBucketNames() {
+  // `follows` is the base Twitch-follow list and may overlap with exactly one
+  // special bucket. Only special buckets are mutually exclusive.
+  return ["favorites", "priority", "rotation", "low_priority", "blacklist"];
+}
+
+function findChannelBucket(channel, cfg) {
+  const ch = normalizeName(channel);
+  if (!ch) return "";
+
+  for (const bucket of getBucketNames()) {
+    const list = Array.isArray(cfg?.[bucket]) ? cfg[bucket] : [];
+    if (list.includes(ch)) return bucket;
+  }
+
+  return "";
+}
+
+function validateExclusiveBuckets(cfg) {
+  const seen = new Map();
+  const conflicts = [];
+
+  for (const bucket of getBucketNames()) {
+    const list = normalizeBucketList(cfg?.[bucket]);
+    for (const ch of list) {
+      if (seen.has(ch)) {
+        conflicts.push({
+          channel: ch,
+          first: seen.get(ch),
+          second: bucket
+        });
+      } else {
+        seen.set(ch, bucket);
+      }
+    }
+  }
+
+  return conflicts;
+}
+
+function buildFollowUnion(cfg) {
+  return uniqNames([
+    ...(cfg.favorites || []),
+    ...(cfg.priority || []),
+    ...(cfg.follows || []),
+    ...(cfg.rotation || []),
+    ...(cfg.low_priority || [])
+  ]);
+}
+
 async function backupCurrentBrowserConfig(reason = "background_load_seen") {
   const bag = await chrome.storage.local.get(null);
   if (!hasMeaningfulBrowserConfig(bag)) return null;
@@ -273,7 +371,22 @@ async function loadSettings() {
       blacklist: state.settings.blacklist,
       follows_count: state.settings.follows.length,
       priority_count: state.settings.priority.length,
-      followUnion_count: state.settings.followUnion.length
+      followUnion_count: state.settings.followUnion.length,
+      favorites: state.settings.favorites,
+      rotation: state.settings.rotation,
+      low_priority: state.settings.low_priority,
+      rotation_enabled: state.settings.rotation_enabled,
+      rotation_interval_min: state.settings.rotation_interval_min,
+      rotation_slot_count: state.settings.rotation_slot_count,
+      rotation_cooldown_min: state.settings.rotation_cooldown_min,
+      rotation_include_low_priority: state.settings.rotation_include_low_priority,
+      streak_rescue_enabled: state.settings.streak_rescue_enabled,
+      streak_rescue_mode: state.settings.streak_rescue_mode,
+      streak_rescue_slots: state.settings.streak_rescue_slots,
+      streak_rescue_required_watch_min: state.settings.streak_rescue_required_watch_min,
+      streak_rescue_grace_min: state.settings.streak_rescue_grace_min,
+      streak_rescue_confirm_check_sec: state.settings.streak_rescue_confirm_check_sec,
+      streak_rescue_retry_min: state.settings.streak_rescue_retry_min,
     });
   } else {
     log("config_load_found_no_meaningful_browser_config", {});

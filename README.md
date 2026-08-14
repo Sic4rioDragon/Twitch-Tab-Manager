@@ -332,12 +332,17 @@ Full privacy policy:
 
 All notable changes use `DD/MM/YYYY`.
 
-### [1.0.10] — planned
+### [1.0.10] — in dev
 
-* Make managed Twitch tab recovery as hands-off as possible
-* Avoid forced window focusing during normal recovery / repoke behavior
+* Further improve managed Twitch tab recovery while keeping behavior as hands-off as possible
+* Avoid forced window focusing during normal recovery / repoke / rotation behavior
 * Improve hidden-tab retry handling before any stronger wake action is considered
 * Keep soft-wake conservative and optional so gameplay / active windows are not interrupted
+* Reduced noisy optional HTML-following fallback errors so non-fatal Twitch fetch failures do not show up like hard extension errors
+* Add channel hierarchy support such as favorites, priority, normal follows, rotation, low priority, and blacklist
+* Add validation so a channel can only belong to one config bucket at a time
+* Add dedicated rotation slots with cooldown tracking
+* Add a suggestions feedback form
 
 ### [1.0.9] — 22/03/2026
 
@@ -487,6 +492,14 @@ All notable changes use `DD/MM/YYYY`.
 * Keep improving player-state handling so hidden tabs recover more reliably
 * Keep `soft_wake_tabs` conservative and optional
 * Keep improving live detection resilience when Twitch changes page structure
+* Add channel hierarchy support:
+  * favorites
+  * priority
+  * normal follows
+  * rotation
+  * low priority
+  * blacklist
+  * Add validation so channels cannot exist in multiple config groups at once
 
 ### Medium priority
 
@@ -494,6 +507,9 @@ All notable changes use `DD/MM/YYYY`.
 * Better handling for tab reuse vs manager-owned tabs
 * Improved duplicate detection across Twitch windows
 * Stronger stuck-tab detection before any wake/focus action
+* Add in-tab rotation with cooldown tracking and tab ownership memory
+* Add rotation preview in Options
+* Add open reason / close reason in diagnostics
 
 ### Lower priority / future ideas
 

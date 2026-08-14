@@ -93,27 +93,35 @@ async function execScriptMV3(tabId, func) {
     if (!html) return false;
 
     const checks = [
+      // older / JSON-ish Twitch page shapes
       /"isLiveBroadcast"\s*:\s*true/i,
       /"isLive"\s*:\s*true/i,
       /"stream"\s*:\s*{[\s\S]{0,1200}?"type"\s*:\s*"live"/i,
       /"videoPlayerState"\s*:\s*{[\s\S]{0,1200}?"isLive"\s*:\s*true/i,
       /"contentForTheatreMode"\s*:\s*{[\s\S]{0,1200}?"isLive"\s*:\s*true/i,
       /"broadcastSettings"[\s\S]{0,1200}"isLive"\s*:\s*true/i,
-      /"streamType"\s*:\s*"live"/i
+      /"streamType"\s*:\s*"live"/i,
+
+      // newer rendered Twitch page markers
+      /data-a-target=["']animated-channel-viewers-count["']/i,
+      /class=["'][^"']*\blive-time\b[^"']*["']/i,
+      /since live stream started/i
     ];
 
     return checks.some((re) => re.test(html));
   }
   
-  function htmlLooksOffline(html) {
+function htmlLooksOffline(html) {
   if (!html) return false;
 
+  if (htmlHasLiveFlags(html)) return false;
+
   const checks = [
-    />\s*offline\s*</i,
-    /stream from [0-9]+\s+(minute|minutes|hour|hours|day|days)\s+ago/i,
-    /"isLiveBroadcast"\s*:\s*false/i,
-    /"isLive"\s*:\s*false/i,
-    /follow to know when .* goes live/i
+    />\s*OFFLINE\s*</i,
+    /check out this [\s\S]{0,180}? stream from \d+\s+(minute|minutes|hour|hours|day|days)\s+ago/i,
+    /stream from \d+\s+(minute|minutes|hour|hours|day|days)\s+ago/i,
+    /data-a-target=["']channel-offline-info["']/i,
+    /data-a-target=["']offline-channel-main-content["']/i
   ];
 
   return checks.some((re) => re.test(html));
@@ -155,7 +163,7 @@ async function execScriptMV3(tabId, func) {
             html_len: html.length
           });
 
-          if (isLive) {
+          if (isLive && !isOffline) {
             live.push(login);
           }
         } catch (e) {
@@ -172,44 +180,49 @@ async function execScriptMV3(tabId, func) {
   }
 
   async function htmlFetchFollowing() {
-    try {
-      const r = await fetch("https://www.twitch.tv/directory/following/live", {
-        credentials: "include",
-        cache: "no-cache",
-        headers: {
-          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-          "Pragma": "no-cache",
-          "Cache-Control": "no-cache"
-        },
-        mode: "cors"
-      });
+  try {
+    const r = await fetch("https://www.twitch.tv/directory/following/live", {
+      credentials: "include",
+      cache: "no-cache",
+      headers: {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Pragma": "no-cache",
+        "Cache-Control": "no-cache"
+      },
+      mode: "cors"
+    });
 
-      if (!r.ok) return [];
-      const h = await r.text();
-
-      const set = new Set();
-      let m;
-
-      const p1 = /"broadcaster[_-]?login"\s*:\s*"([^"]+)"/gi;
-      const p2 = /data-channel-login="([^"]+)"/gi;
-      const p3 = /"login"\s*:\s*"([^"]+)"\s*,\s*"isLiveBroadcast"\s*:\s*true/gi;
-      const p4 = /"user[_-]?login"\s*:\s*"([^"]+)"/gi;
-      const p5 = /<a[^>]+href="\/([a-z0-9_]+)"[^>]+data-test-selector="ChannelLink"[^>]*>/gi;
-
-      while ((m = p1.exec(h))) set.add(m[1].toLowerCase());
-      while ((m = p2.exec(h))) set.add(m[1].toLowerCase());
-      while ((m = p3.exec(h))) set.add(m[1].toLowerCase());
-      while ((m = p4.exec(h))) set.add(m[1].toLowerCase());
-      while ((m = p5.exec(h))) set.add(m[1].toLowerCase());
-
-      const raw = [...set];
-      log("html_following_result_raw", { count: raw.length, channels: raw });
-      return raw;
-    } catch (e) {
-      log("html_following_error", String(e));
+    if (!r.ok) {
+      log("html_following_skip", { status: r.status });
       return [];
     }
+
+    const h = await r.text();
+
+    const set = new Set();
+    let m;
+
+    const p1 = /"broadcaster[_-]?login"\s*:\s*"([^"]+)"/gi;
+    const p2 = /data-channel-login="([^"]+)"/gi;
+    const p3 = /"login"\s*:\s*"([^"]+)"\s*,\s*"isLiveBroadcast"\s*:\s*true/gi;
+    const p4 = /"user[_-]?login"\s*:\s*"([^"]+)"/gi;
+    const p5 = /<a[^>]+href="\/([a-z0-9_]+)"[^>]+data-test-selector="ChannelLink"[^>]*>/gi;
+
+    while ((m = p1.exec(h))) set.add(m[1].toLowerCase());
+    while ((m = p2.exec(h))) set.add(m[1].toLowerCase());
+    while ((m = p3.exec(h))) set.add(m[1].toLowerCase());
+    while ((m = p4.exec(h))) set.add(m[1].toLowerCase());
+    while ((m = p5.exec(h))) set.add(m[1].toLowerCase());
+
+    const raw = [...set];
+    log("html_following_result_raw", { count: raw.length, channels: raw });
+    return raw;
+  } catch (e) {
+    // This is an optional fallback now, so do not surface it as a scary hard error.
+    log("html_following_skip", { reason: String(e) });
+    return [];
   }
+}
 
   async function getWebOAuthTokenFromConfig(cfg) {
     const direct =
@@ -364,11 +377,17 @@ async function execScriptMV3(tabId, func) {
         else log("live_check", "Probe method returned no results");
       }
 
-      if (found.size < capNum) {
+      if (
+        found.size < capNum &&
+        !cfg?.client_id &&
+        !cfg?.access_token
+      ) {
         log("live_check", "Trying HTML following method");
         const viaHtml = filterConfigured(await htmlFetchFollowing(), cfg);
         if (viaHtml.length > 0) addFound(viaHtml, "html_following");
         else log("live_check", "HTML following method returned no configured results");
+      } else {
+        log("live_check", "Skipping HTML following method");
       }
 
       const allowTabScrapeFallback =
