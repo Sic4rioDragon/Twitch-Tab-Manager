@@ -9,8 +9,10 @@
     force_unmute: false,
     unmute_streams: false,
     force_resume: false,
-    autoplay_streams: false
+    autoplay_streams: false,
+    startup_muted: false
   },
+  controlEnabled: true,
   loopStarted: false,
   lastStatusSentAt: 0,
   directUnmuteBlockedUntil: 0,
@@ -18,7 +20,12 @@
   lastGuardLogAt: 0,
   lastVideoProgressAt: 0,
   lastVideoTime: 0,
-  firstNoVideoAt: 0
+  firstNoVideoAt: 0,
+  startupMutedVideo: null,
+  startupPreMuted: null,
+  mutedByTTM: false,
+  startupMuteAttempted: false,
+  startupChannel: ""
   };
 
   function wait(ms) {
@@ -101,12 +108,15 @@ function guardLog(kind, extra = {}) {
 function canTryDirectUnmute(video) {
   if (!video) return false;
   if (Date.now() < state.directUnmuteBlockedUntil) return false;
-  if (!canSafelyForceUnmute()) return false;
 
   // Avoid poking too early before media is actually ready.
   if (typeof video.readyState === "number" && video.readyState < 2) return false;
 
-  return true;
+  // User-facing tabs may unmute normally. TTM background tabs are browser-tab
+  // muted, so once media is already progressing it is safe to restore the
+  // Twitch player's own mute state without producing audible output.
+  if (canSafelyForceUnmute()) return true;
+  return !video.paused && Number(video.currentTime || 0) > 0.25;
 }
 
 function isUserGestureUnmuteError(err) {
@@ -154,7 +164,49 @@ async function safePlay(video) {
     await video.play();
     return !video.paused;
   } catch (err) {
-    const backoffMs = isUserGestureUnmuteError(err) ? 5 * 60 * 1000 : 60000;
+    // Only if Chromium rejects the first unmuted play attempt do we use a
+    // temporary media-element mute. This fallback is allowed once per channel
+    // page, then the Twitch player is restored immediately after playback
+    // starts. The browser TAB remains muted independently the whole time.
+    const startupMuteAllowed = !!state.settings?.startup_muted &&
+      !state.startupMuteAttempted &&
+      Number(video?.currentTime || 0) < 0.25;
+    if (isUserGestureUnmuteError(err) && video && startupMuteAllowed) {
+      state.startupMuteAttempted = true;
+      try {
+        state.startupMutedVideo = video;
+        state.startupPreMuted = !!video.muted;
+        state.mutedByTTM = false;
+        if (!video.muted) {
+          video.muted = true;
+          state.mutedByTTM = true;
+        }
+        await video.play();
+        if (!video.paused) {
+          state.playBlockedUntil = 0;
+          const restoreVideo = video;
+          const shouldRestoreUnmuted = state.mutedByTTM && !state.startupPreMuted;
+          setTimeout(() => {
+            try {
+              if (shouldRestoreUnmuted && restoreVideo.muted) restoreVideo.muted = false;
+            } catch {}
+            if (state.startupMutedVideo === restoreVideo) {
+              state.startupMutedVideo = null;
+              state.startupPreMuted = null;
+              state.mutedByTTM = false;
+            }
+          }, 250);
+          guardLog("play_muted_background_fallback", {
+            backgroundSafe: true,
+            temporary: true,
+            playerMuteRestoreMs: 250
+          });
+          return true;
+        }
+      } catch {}
+    }
+
+    const backoffMs = 60000;
     state.playBlockedUntil = Date.now() + backoffMs;
     guardLog("play_backoff", { backoffMs });
     return false;
@@ -242,6 +294,9 @@ function isLikelyStuckStarting(video) {
     volume: typeof video?.volume === "number" ? video.volume : null,
     readyState: typeof video?.readyState === "number" ? video.readyState : -1,
     currentTime: typeof video?.currentTime === "number" ? video.currentTime : 0,
+    networkState: typeof video?.networkState === "number" ? video.networkState : -1,
+    playerElement: !!document.querySelector('[data-a-target="video-player"], .video-player, video'),
+    progressAgeMs: state.lastVideoProgressAt ? Math.max(0, Date.now() - state.lastVideoProgressAt) : -1,
     stalledStart: isLikelyStuckStarting(video),
     adPlaying: ad,
     visible: !document.hidden,
@@ -287,13 +342,48 @@ function isLikelyStuckStarting(video) {
 
   const opts = state.settings || {};
   const video = getVideo();
+  const currentChannel = getChannelLogin();
+
+  // Twitch is a SPA and may swap the video element while staying in the same
+  // content-script instance. Reset the one-shot startup fallback only when the
+  // actual channel changes, never merely because Twitch replaced <video>.
+  if (currentChannel && state.startupChannel !== currentChannel) {
+    state.startupChannel = currentChannel;
+    state.startupMuteAttempted = false;
+    state.startupMutedVideo = null;
+    state.startupPreMuted = null;
+    state.mutedByTTM = false;
+    state.playBlockedUntil = 0;
+  }
 
   updateVideoProgress(video);
 
-  if (opts.force_unmute || opts.unmute_streams) {
-    await clickUnmuteIfNeeded();
+  // A selected/user-facing Twitch tab is observation-only. The background
+  // sends TTM_ENFORCE_PAUSE when a managed tab becomes selected.
+  if (!state.controlEnabled) {
+    await sendStatus();
+    return;
+  }
 
-    if (video) {
+  // Never proactively mute Twitch's player. startup_muted now means only that
+  // safePlay() is permitted to use one very short muted-autoplay fallback if an
+  // ordinary play() is rejected. If that fallback was still pending, restore
+  // the player's prior state as soon as startup mode ends.
+  if (!opts.startup_muted && video) {
+    const forcePlayerUnmuted = !!(opts.force_unmute || opts.unmute_streams);
+
+    if (state.startupMutedVideo === video && state.mutedByTTM) {
+      const desiredMuted = forcePlayerUnmuted ? false : !!state.startupPreMuted;
+      try {
+        if (video.muted !== desiredMuted) video.muted = desiredMuted;
+      } catch {}
+      state.startupMutedVideo = null;
+      state.startupPreMuted = null;
+      state.mutedByTTM = false;
+    }
+
+    if (forcePlayerUnmuted) {
+      await clickUnmuteIfNeeded();
       await safeDirectUnmute(video);
     }
   }
@@ -350,9 +440,17 @@ function isLikelyStuckStarting(video) {
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg?.type === "TTM_ENFORCE" && msg?.settings) {
       state.settings = { ...state.settings, ...msg.settings };
+      state.controlEnabled = true;
       enforceOnce().catch(() => {});
       startLoop().catch(() => {});
       sendResponse?.({ ok: true });
+      return true;
+    }
+
+    if (msg?.type === "TTM_ENFORCE_PAUSE") {
+      state.controlEnabled = false;
+      sendStatus(true).catch(() => {});
+      sendResponse?.({ ok: true, paused_control: true });
       return true;
     }
 

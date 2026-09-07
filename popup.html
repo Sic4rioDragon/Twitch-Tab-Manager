@@ -259,6 +259,65 @@
       color: var(--muted);
     }
 
+
+    .rotation-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .rotation-title {
+      font-weight: 800;
+      font-size: 14px;
+    }
+
+    .rotation-badge {
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(145, 70, 255, .14);
+      border: 1px solid rgba(145, 70, 255, .3);
+      color: #d8b4fe;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .rotation-slots {
+      display: grid;
+      gap: 7px;
+    }
+
+    .rotation-slot {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 9px;
+      border-radius: 10px;
+      background: var(--card-2);
+      border: 1px solid #1e293b;
+      font-size: 12px;
+    }
+
+    .rotation-slot strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rotation-time {
+      color: var(--muted-2);
+      white-space: nowrap;
+    }
+
+    .rotation-foot {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+
     body.is-busy .card { opacity: .92; }
   </style>
 </head>
@@ -290,6 +349,9 @@
       <div class="meta-lines">
         <div class="meta-line">Updated to <strong id="updatedVersion">—</strong></div>
         <div class="meta-line">Last poll <strong id="lastPoll">—</strong></div>
+        <div class="meta-line">Health <strong id="healthText">—</strong></div>
+        <div class="meta-line">Playback window <strong id="managerWindowText">—</strong></div>
+        <div class="meta-line">Browser tab mute <strong>preserved</strong></div>
       </div>
 
       <div class="stats">
@@ -302,10 +364,20 @@
           <strong id="statLive">—</strong>
         </div>
         <div class="stat">
-          <span class="stat-label">Max</span>
+          <span class="stat-label">Owned cap</span>
           <strong id="statMax">—</strong>
         </div>
       </div>
+    </section>
+
+
+    <section id="rotationCard" class="card" style="display:none;">
+      <div class="rotation-head">
+        <div class="rotation-title">Phase D Rotation</div>
+        <span id="rotationBadge" class="rotation-badge">—</span>
+      </div>
+      <div id="rotationSlots" class="rotation-slots"></div>
+      <div id="rotationNext" class="rotation-foot"></div>
     </section>
 
     <section class="card">

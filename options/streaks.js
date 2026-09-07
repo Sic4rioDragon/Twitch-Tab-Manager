@@ -1,85 +1,16 @@
 import { $, err, note, ok, rpc } from "./core.js";
 import { clampConfig, getStoredConfig, readStorage, writeConfigEverywhere } from "./storage.js";
 
-function ensureUI() {
-  if ($("#streakRescueCard")) return;
-
-  const stack = $("#panel-settings .stack");
-  if (!stack) return;
-
-  const quickCard = Array.from(stack.querySelectorAll(":scope > section.card")).find(
-    (section) => section.querySelector("h2")?.textContent?.trim() === "Quick Settings"
-  );
-
-  const card = document.createElement("section");
-  card.className = "card";
-  card.id = "streakRescueCard";
-  card.innerHTML = `
-    <h2>Streak Rescue</h2>
-    <p class="small">Detects Twitch's <strong>Save your Streak</strong> entries. In Automatic mode, one dedicated background tab watches the rescue VOD for at least 5 minutes, then waits for Twitch to stop showing that streak as at risk. If Twitch does not confirm it, the tab keeps watching for the extra safety time.</p>
-
-    <div class="grid">
-      <div class="subcard">
-        <label class="checkbox-row"><input id="streakRescueEnabled" type="checkbox"> Enable Streak Rescue</label>
-
-        <label class="field" style="margin-top:10px;">
-          <span class="label-title">Mode</span>
-          <select id="streakRescueMode">
-            <option value="detect">Detect only</option>
-            <option value="auto">Automatic rescue</option>
-          </select>
-        </label>
-
-        <div class="two" style="margin-top:10px;">
-          <label class="field">
-            <span class="label-title">Required VOD watch (min)</span>
-            <input id="streakRequiredMin" type="number" min="5" step="1">
-          </label>
-
-          <label class="field">
-            <span class="label-title">Extra safety time (min)</span>
-            <input id="streakGraceMin" type="number" min="0" step="1">
-          </label>
-
-          <label class="field">
-            <span class="label-title">Confirmation check (sec)</span>
-            <input id="streakConfirmSec" type="number" min="15" step="5">
-          </label>
-
-          <label class="field">
-            <span class="label-title">Retry after failure (min)</span>
-            <input id="streakRetryMin" type="number" min="5" step="1">
-          </label>
-        </div>
-
-        <p class="small" style="margin-top:10px;">Dedicated rescue slots: <strong>1</strong> for now. The rescue tab is opened in the background and is never focused by the extension.</p>
-
-        <div class="btns">
-          <button id="streakRescueSave" class="primary">Save Streak Rescue</button>
-          <button id="streakRescueRefresh">Refresh Status</button>
-          <button id="streakRescueTick">Run Rescue Check</button>
-        </div>
-        <div id="streakRescueSaveStatus" class="status"></div>
-      </div>
-
-      <div class="subcard">
-        <h4>Rescue Status</h4>
-        <pre id="streakRescueStatus" class="miniTA" style="white-space:pre-wrap; min-height:180px;"></pre>
-      </div>
-    </div>
-  `;
-
-  if (quickCard?.nextSibling) stack.insertBefore(card, quickCard.nextSibling);
-  else stack.appendChild(card);
-}
+let refreshTimer = null;
 
 function populate(cfg) {
   if ($("#streakRescueEnabled")) $("#streakRescueEnabled").checked = !!cfg.streak_rescue_enabled;
-  if ($("#streakRescueMode")) $("#streakRescueMode").value = String(cfg.streak_rescue_mode || "detect");
+  if ($("#streakRescueMode")) $("#streakRescueMode").value = String(cfg.streak_rescue_mode || "auto");
   if ($("#streakRequiredMin")) $("#streakRequiredMin").value = String(cfg.streak_rescue_required_watch_min ?? 5);
   if ($("#streakGraceMin")) $("#streakGraceMin").value = String(cfg.streak_rescue_grace_min ?? 10);
   if ($("#streakConfirmSec")) $("#streakConfirmSec").value = String(cfg.streak_rescue_confirm_check_sec ?? 30);
   if ($("#streakRetryMin")) $("#streakRetryMin").value = String(cfg.streak_rescue_retry_min ?? 15);
+  updateModeUI();
 }
 
 function formatMs(ms) {
@@ -89,22 +20,79 @@ function formatMs(ms) {
   return `${m}m ${String(s).padStart(2, "0")}s`;
 }
 
+function formatAge(ts) {
+  const n = Number(ts || 0);
+  if (!n) return "never";
+  const sec = Math.max(0, Math.round((Date.now() - n) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
+
+function updateModeUI(status = null) {
+  const enabled = !!$("#streakRescueEnabled")?.checked;
+  const mode = $("#streakRescueMode")?.value || "auto";
+  const badge = $("#streakModeBadge");
+  const warning = $("#streakDetectWarning");
+
+  if (badge) {
+    badge.className = "status-pill";
+    if (!enabled) {
+      badge.textContent = "Disabled";
+      badge.classList.add("off");
+    } else if (mode === "detect") {
+      badge.textContent = "Detect only";
+      badge.classList.add("warn");
+    } else if (status?.active) {
+      badge.textContent = "Rescuing now";
+      badge.classList.add("ok");
+    } else {
+      badge.textContent = "Automatic";
+      badge.classList.add("ok");
+    }
+  }
+
+  if (warning) warning.style.display = enabled && mode === "detect" ? "block" : "none";
+}
+
 function renderStatus(resp) {
   const out = $("#streakRescueStatus");
   if (!out) return;
 
   if (!resp?.ok) {
     out.textContent = `Status unavailable: ${resp?.error || "unknown error"}`;
+    $("#streakLastScan") && ($("#streakLastScan").textContent = "error");
     return;
   }
 
   const s = resp.status || {};
+  updateModeUI(s);
+
+  if ($("#streakLastScan")) $("#streakLastScan").textContent = formatAge(s.last_scan_at);
+  if ($("#streakDetected")) $("#streakDetected").textContent = String(s.last_scan_count ?? 0);
+  if ($("#streakQueue")) $("#streakQueue").textContent = String(s.queue_count ?? 0);
+  if ($("#streakActive")) $("#streakActive").textContent = s.active ? s.active.channel : "No";
+
+  const scan = s.last_scan || {};
   const lines = [
     `Enabled: ${s.enabled ? "yes" : "no"}`,
-    `Mode: ${s.mode || "detect"}`,
-    `At risk found in last scan: ${s.last_scan_count ?? 0}`,
+    `Mode: ${s.mode || "auto"}`,
+    `Last scan: ${formatAge(s.last_scan_at)}`,
+    `Scanner ready: ${scan.ready ? "yes" : "no"}`,
+    `Sidebar present: ${scan.sidebar_present ? "yes" : "no"}`,
+    `At-risk group present: ${scan.group_present ? "yes" : "no"}`,
+    `Candidate links inspected: ${scan.candidate_count ?? 0}`,
+    `At risk detected: ${s.last_scan_count ?? 0}`,
     `Queued: ${s.queue_count ?? 0}`
   ];
+
+  if (scan.helper_version) lines.push(`Scanner helper: v${scan.helper_version}`);
+
+  if (s.enabled && s.mode === "detect") {
+    lines.push("", "NOTE: Detect-only mode does not open a rescue VOD.");
+  }
 
   if (s.active) {
     lines.push("", "ACTIVE RESCUE");
@@ -122,9 +110,7 @@ function renderStatus(resp) {
 
   if (Array.isArray(s.queue) && s.queue.length) {
     lines.push("", "QUEUE");
-    for (const item of s.queue.slice(0, 8)) {
-      lines.push(`- ${item.channel} (streak ${item.streak || 0})`);
-    }
+    for (const item of s.queue.slice(0, 8)) lines.push(`- ${item.channel} (streak ${item.streak || 0})`);
   }
 
   if (Array.isArray(s.history) && s.history.length) {
@@ -143,10 +129,12 @@ async function saveSettings() {
   try {
     const bag = await readStorage();
     const cfg = getStoredConfig(bag);
+    const mode = $("#streakRescueMode")?.value || "auto";
     const next = clampConfig({
       ...cfg,
       streak_rescue_enabled: !!$("#streakRescueEnabled")?.checked,
-      streak_rescue_mode: $("#streakRescueMode")?.value || "detect",
+      streak_rescue_mode: mode,
+      streak_rescue_detect_only_explicit: mode === "detect",
       streak_rescue_required_watch_min: Number($("#streakRequiredMin")?.value || 5),
       streak_rescue_grace_min: Number($("#streakGraceMin")?.value || 10),
       streak_rescue_confirm_check_sec: Number($("#streakConfirmSec")?.value || 30),
@@ -161,24 +149,31 @@ async function saveSettings() {
       return;
     }
 
-    ok($("#streakRescueSaveStatus"), "Streak Rescue saved and reloaded.");
+    ok($("#streakRescueSaveStatus"), `Streak Rescue saved in ${next.streak_rescue_mode === "auto" ? "Automatic" : "Detect-only"} mode.`);
+    updateModeUI();
     await refreshStatus();
+    globalThis.TTMOptions?.refreshDashboard?.();
   } catch (e) {
     err($("#streakRescueSaveStatus"), `Streak Rescue save failed: ${e?.message || e}`);
   }
 }
 
 export function setupStreakRescuePanel() {
-  ensureUI();
+  readStorage().then((bag) => populate(getStoredConfig(bag))).catch(() => {});
 
-  readStorage()
-    .then((bag) => populate(getStoredConfig(bag)))
-    .catch(() => {});
-
+  $("#streakRescueEnabled")?.addEventListener("change", () => {
+    // New behavior: when the user turns rescue on, default to Automatic.
+    // Detect-only is still available as an explicit choice.
+    if ($("#streakRescueEnabled")?.checked && $("#streakRescueMode")?.value === "detect") {
+      $("#streakRescueMode").value = "auto";
+    }
+    updateModeUI();
+  });
+  $("#streakRescueMode")?.addEventListener("change", () => updateModeUI());
   $("#streakRescueSave")?.addEventListener("click", saveSettings);
   $("#streakRescueRefresh")?.addEventListener("click", refreshStatus);
   $("#streakRescueTick")?.addEventListener("click", async () => {
-    note($("#streakRescueSaveStatus"), "Running rescue check...");
+    note($("#streakRescueSaveStatus"), "Running rescue check and reinjecting the scanner…");
     const resp = await rpc("ttm/streak_tick");
     if (resp?.ok) ok($("#streakRescueSaveStatus"), "Rescue check finished.");
     else err($("#streakRescueSaveStatus"), resp?.error || "Rescue check failed.");
@@ -186,5 +181,8 @@ export function setupStreakRescuePanel() {
   });
 
   refreshStatus().catch(() => {});
-  setInterval(() => refreshStatus().catch(() => {}), 15000);
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (!document.hidden && $("#panel-streaks")?.classList.contains("active")) refreshStatus().catch(() => {});
+  }, 10000);
 }

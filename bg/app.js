@@ -1,6 +1,10 @@
+import "./events.js";
 import "./core.js";
 import "./config.js";
 import "./compat.js";
+import "./manager-window.js";
+import "./rotation.js";
+import "./registry.js";
 import "./tabs.js";
 import "./live.js";
 import "./stability.js";

@@ -7,583 +7,732 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #0b0f15;
+      --bg: #080b11;
+      --sidebar: #0b1018;
       --panel: #101722;
-      --panel-2: #0f172a;
-      --panel-3: #0b1220;
-      --border: #1f2937;
-      --border-2: #273449;
-      --text: #e5e7eb;
+      --panel-2: #0d1420;
+      --panel-3: #0a111b;
+      --panel-hover: #141e2d;
+      --border: #1f2a3a;
+      --border-2: #2b3a50;
+      --text: #e7eaf0;
       --text-strong: #f8fafc;
-      --muted: #9ca3af;
+      --muted: #94a3b8;
       --accent: #9146ff;
-      --accent-2: #a855f7;
+      --accent-soft: rgba(145, 70, 255, .15);
       --ok: #22c55e;
+      --warn: #f59e0b;
       --err: #ef4444;
-      --shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+      --shadow: 0 18px 48px rgba(0, 0, 0, .28);
+      --sidebar-width: 248px;
     }
 
     * { box-sizing: border-box; }
-
-    html, body {
-      margin: 0;
+    html, body { margin: 0; min-height: 100%; }
+    body {
       background:
-        radial-gradient(circle at top, rgba(145, 70, 255, 0.12), transparent 34%),
+        radial-gradient(circle at 78% -10%, rgba(145, 70, 255, .14), transparent 32%),
         var(--bg);
       color: var(--text);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     }
 
-    body {
-      padding: 20px;
+    a { color: #c4b5fd; }
+    button, input, select, textarea { font: inherit; }
+
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
     }
 
-    .container {
-      max-width: 1100px;
-      margin: 0 auto;
-    }
-
-    .page-header {
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      margin-bottom: 16px;
+      padding: 18px 14px;
+      border-right: 1px solid var(--border);
+      background: rgba(11, 16, 24, .96);
+      backdrop-filter: blur(14px);
+      z-index: 5;
     }
 
-    h1 {
-      font-size: 26px;
-      line-height: 1.2;
-      margin: 0;
-      color: var(--text-strong);
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 4px 7px 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 14px;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      color: white;
+      font-weight: 900;
+      letter-spacing: -.04em;
+      background: linear-gradient(145deg, #a855f7, #6d28d9);
+      box-shadow: 0 8px 24px rgba(145, 70, 255, .28);
+    }
+
+    .brand-copy strong { display: block; color: var(--text-strong); font-size: 14px; }
+    .brand-copy span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+
+    .nav-label {
+      padding: 0 10px;
+      margin: 9px 0 6px;
+      color: #64748b;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+
+    .tabs {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 9px 11px;
+      border: 1px solid transparent;
+      border-radius: 11px;
+      color: #cbd5e1;
+      background: transparent;
+      cursor: pointer;
+      user-select: none;
+      transition: .14s ease;
+    }
+
+    .tab:hover { background: rgba(255, 255, 255, .035); color: #fff; }
+    .tab.active {
+      color: #fff;
+      background: linear-gradient(90deg, rgba(145,70,255,.20), rgba(145,70,255,.07));
+      border-color: rgba(145,70,255,.28);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .tab-icon {
+      width: 21px;
+      height: 21px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      border-radius: 7px;
+      background: #121b29;
+      color: #c4b5fd;
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .tab.active .tab-icon { background: rgba(145,70,255,.22); color: #fff; }
+
+    .sidebar-foot {
+      margin-top: auto;
+      padding: 13px 9px 2px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
     }
 
     .version-line {
       display: inline-flex;
       align-items: center;
-      width: fit-content;
-      padding: 4px 10px;
+      margin-top: 7px;
+      padding: 4px 8px;
+      border: 1px solid rgba(145,70,255,.3);
       border-radius: 999px;
-      font-size: 12px;
       color: #d8b4fe;
-      background: rgba(145, 70, 255, 0.16);
-      border: 1px solid rgba(145, 70, 255, 0.32);
+      background: rgba(145,70,255,.12);
+      font-size: 10px;
+      font-weight: 800;
     }
 
-    .tabs {
+    .main {
+      min-width: 0;
+      padding: 24px 28px 44px;
+    }
+
+    .topbar {
+      max-width: 1320px;
+      margin: 0 auto 20px;
       display: flex;
-      gap: 10px;
-      border-bottom: 1px solid var(--border);
-      margin-bottom: 18px;
-      padding-bottom: 10px;
-      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
     }
 
-    .tab {
-      padding: 10px 14px;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--panel-2);
-      color: var(--text);
-      cursor: pointer;
-      transition: .15s ease;
-      user-select: none;
-    }
+    .topbar h1 { margin: 0; color: var(--text-strong); font-size: 27px; letter-spacing: -.025em; }
+    .topbar p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
 
-    .tab:hover {
-      filter: brightness(1.08);
-      transform: translateY(-1px);
-    }
+    .topbar-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
-    .tab.active {
-      background: linear-gradient(180deg, rgba(145, 70, 255, 0.18), rgba(145, 70, 255, 0.1));
-      border-color: rgba(145, 70, 255, 0.35);
-      color: #fff;
-      font-weight: 700;
-    }
-
+    .content { max-width: 1320px; margin: 0 auto; }
     .panel { display: none; }
     .panel.active { display: block; }
 
-    .stack {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+    .stack { display: flex; flex-direction: column; gap: 15px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 15px; }
+    .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 
     .card {
-      background: var(--panel);
+      min-width: 0;
+      padding: 17px;
       border: 1px solid var(--border);
-      border-radius: 16px;
+      border-radius: 15px;
+      background: linear-gradient(180deg, rgba(16,23,34,.98), rgba(13,20,32,.98));
       box-shadow: var(--shadow);
-      padding: 16px;
     }
 
-    .card h2, .card h3, .card h4 {
-      color: var(--text-strong);
-      margin: 0 0 10px;
+    .card.flat { box-shadow: none; }
+    .subcard {
+      min-width: 0;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: var(--panel-3);
     }
 
-    .card h2 { font-size: 20px; }
-    .card h3 { font-size: 18px; }
-    .card h4 { font-size: 15px; }
-
-    .note,
-    .small {
-      font-size: 12px;
-      color: var(--muted);
+    .card-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 13px;
     }
 
+    .card h2, .card h3, .card h4 { margin: 0 0 8px; color: var(--text-strong); }
+    .card h2 { font-size: 18px; }
+    .card h3 { font-size: 15px; }
+    .card h4 { font-size: 13px; }
+
+    .eyebrow {
+      margin-bottom: 5px;
+      color: #a78bfa;
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+
+    .small, .note { color: var(--muted); font-size: 12px; line-height: 1.55; }
     .note { margin: 0; }
+    .section-title { margin-bottom: 8px; }
 
-    .help {
-      line-height: 1.6;
-    }
-
-    .grid {
+    .dashboard-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
     }
 
-    .two {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
+    .metric {
+      min-width: 0;
+      padding: 13px;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      background: var(--panel-3);
     }
 
-    .field,
-    label {
-      display: block;
-      color: var(--text);
-    }
+    .metric-label { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
+    .metric-value { margin-top: 5px; color: var(--text-strong); font-size: 19px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric-sub { margin-top: 3px; color: #64748b; font-size: 10px; }
 
-    .label-title {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text-strong);
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--border-2);
+      background: #101827;
+      color: #cbd5e1;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
     }
+    .status-pill.ok { color: #bbf7d0; border-color: rgba(34,197,94,.32); background: rgba(34,197,94,.11); }
+    .status-pill.warn { color: #fde68a; border-color: rgba(245,158,11,.32); background: rgba(245,158,11,.10); }
+    .status-pill.off { color: #94a3b8; }
 
-    input,
-    select,
-    button,
-    textarea {
-      font: inherit;
-    }
+    .field, label { display: block; color: var(--text); }
+    .label-title { display: block; margin-bottom: 6px; color: var(--text-strong); font-size: 12px; font-weight: 800; }
 
-    input[type="text"],
-    input[type="password"],
-    input[type="number"],
-    select,
-    textarea {
+    input[type="text"], input[type="password"], input[type="number"], select, textarea {
       width: 100%;
-      padding: 10px 12px;
+      padding: 10px 11px;
       border: 1px solid var(--border-2);
       border-radius: 10px;
-      background: var(--panel-2);
+      background: #0b1320;
       color: var(--text);
       outline: none;
-      transition: border-color .15s ease, box-shadow .15s ease;
+      transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
     }
 
-    input[type="text"]:focus,
-    input[type="password"]:focus,
-    input[type="number"]:focus,
-    select:focus,
-    textarea:focus {
-      border-color: rgba(145, 70, 255, 0.65);
-      box-shadow: 0 0 0 3px rgba(145, 70, 255, 0.14);
+    input:focus, select:focus, textarea:focus {
+      border-color: rgba(145,70,255,.7);
+      box-shadow: 0 0 0 3px rgba(145,70,255,.12);
+      background: #0c1523;
     }
 
-    textarea {
-      min-height: 280px;
-      resize: vertical;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 13px;
-    }
+    textarea { min-height: 220px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+    .miniTA { min-height: 132px; }
 
-    .miniTA {
-      min-height: 140px;
-    }
+    .checkbox-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px 14px; }
+    .checkbox-row { display: flex; align-items: flex-start; gap: 8px; min-height: 22px; font-size: 12px; line-height: 1.45; }
+    .checkbox-row input[type="checkbox"] { width: 16px; height: 16px; margin-top: 1px; accent-color: var(--accent); flex: 0 0 auto; }
 
-    .btns,
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      align-items: center;
-      margin-top: 10px;
-    }
-
+    .btns, .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
     button {
       appearance: none;
-      padding: 9px 14px;
+      padding: 9px 12px;
       border: 1px solid var(--border-2);
-      border-radius: 10px;
-      background: #1b2637;
+      border-radius: 9px;
+      background: #172235;
       color: var(--text);
+      font-weight: 800;
       cursor: pointer;
-      font-weight: 700;
-      transition: .15s ease;
+      transition: .14s ease;
     }
+    button:hover { filter: brightness(1.08); transform: translateY(-1px); }
+    button.primary { color: #fff; border-color: rgba(145,70,255,.45); background: linear-gradient(180deg, #a855f7, #7c3aed); }
+    button.danger { border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.12); color: #fecaca; }
+    button.ghost { background: transparent; }
 
-    button:hover {
-      transform: translateY(-1px);
-      filter: brightness(1.08);
-    }
+    .status { min-height: 17px; margin-top: 8px; font-size: 11px; }
+    .status.ok, .ok { color: var(--ok); }
+    .status.err, .err { color: var(--err); }
 
-    button.primary {
-      background: linear-gradient(180deg, var(--accent-2), var(--accent));
-      border-color: rgba(145, 70, 255, 0.45);
-      color: #fff;
-    }
+    pre, code { background: #0a101a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); }
+    pre { padding: 10px; overflow: auto; }
+    code.inline { display: inline; padding: 2px 6px; border-radius: 6px; }
 
-    .status {
+    .callout {
+      padding: 12px 13px;
+      border: 1px solid rgba(145,70,255,.28);
+      border-radius: 12px;
+      background: rgba(145,70,255,.08);
+      color: #d8b4fe;
       font-size: 12px;
-      margin-top: 8px;
-      min-height: 16px;
+      line-height: 1.55;
+    }
+    .callout.warn { border-color: rgba(245,158,11,.34); background: rgba(245,158,11,.08); color: #fde68a; }
+
+    .feature-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 15px; }
+    .feature-version { flex: 0 0 auto; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--panel-3); color: var(--muted); font-size: 11px; }
+    .feature-toolbar { display: grid; grid-template-columns: minmax(0,1fr) 230px; gap: 10px; margin-bottom: 11px; }
+    .feature-summary { min-height: 18px; margin: 3px 0 11px; color: var(--muted); font-size: 11px; }
+    .feature-list { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 11px; }
+    .feature-card { min-width: 0; padding: 13px; border: 1px solid var(--border); border-radius: 13px; background: var(--panel-3); }
+    .feature-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; margin-bottom: 7px; }
+    .feature-title { margin: 0; color: var(--text-strong); font-size: 14px; line-height: 1.35; }
+    .feature-category { margin-top: 4px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+    .feature-description { margin: 0; color: #cbd5e1; font-size: 12px; line-height: 1.55; }
+    .feature-badges { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+    .feature-badge { display: inline-flex; padding: 3px 7px; border-radius: 999px; font-size: 9px; font-weight: 900; letter-spacing: .04em; white-space: nowrap; }
+    .feature-badge.new { color:#dcfce7; background:rgba(34,197,94,.14); border:1px solid rgba(34,197,94,.32); }
+    .feature-badge.updated { color:#ede9fe; background:rgba(145,70,255,.16); border:1px solid rgba(145,70,255,.34); }
+    .feature-empty { grid-column:1/-1; padding:26px 16px; text-align:center; border:1px dashed var(--border-2); border-radius:13px; color:var(--muted); }
+
+    .rescue-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; margin:12px 0; }
+    .rescue-stat { padding:10px; border:1px solid var(--border); border-radius:11px; background:#09111c; }
+    .rescue-stat span { display:block; color:var(--muted); font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; }
+    .rescue-stat strong { display:block; margin-top:4px; color:var(--text-strong); font-size:15px; }
+
+    .help { line-height: 1.65; }
+    .help h3 { margin-top: 22px; }
+
+    @media (max-width: 1100px) {
+      :root { --sidebar-width: 210px; }
+      .dashboard-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+      .grid-3 { grid-template-columns: 1fr 1fr; }
     }
 
-    .ok { color: var(--ok); }
-    .err { color: var(--err); }
-
-    pre, code {
-      background: #111827;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: var(--text);
-    }
-
-    pre {
-      padding: 10px;
-      overflow: auto;
-    }
-
-    code.inline {
-      display: inline;
-      padding: 2px 6px;
-      border-radius: 6px;
-    }
-
-    .quick-grid {
-      display: grid;
-      grid-template-columns: 1.2fr 0.8fr;
-      gap: 16px;
-    }
-
-    .subcard {
-      background: var(--panel-3);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 14px;
-    }
-
-    .checkbox-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px 16px;
-    }
-
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-height: 20px;
-    }
-
-    .checkbox-row input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-    }
-
-    .section-title {
-      margin-bottom: 8px;
-    }
-
-    @media (max-width: 980px) {
-      .grid,
-      .two,
-      .quick-grid,
-      .checkbox-grid {
-        grid-template-columns: 1fr;
-      }
+    @media (max-width: 820px) {
+      .app-shell { display: block; }
+      .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 12px; }
+      .brand { padding-bottom: 11px; margin-bottom: 9px; }
+      .tabs { flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
+      .tab { flex: 0 0 auto; min-height: 38px; }
+      .tab-icon, .nav-label, .sidebar-foot { display: none; }
+      .main { padding: 18px 14px 32px; }
+      .topbar { flex-direction: column; }
+      .topbar-actions { justify-content: flex-start; }
+      .grid, .grid-3, .two, .checkbox-grid, .feature-toolbar, .feature-list { grid-template-columns: 1fr; }
+      .dashboard-grid, .rescue-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
     }
   </style>
 </head>
 <body>
-<div class="container">
-  <header class="page-header">
-    <h1>Twitch Tab Manager — Settings</h1>
-    <div id="versionLine" class="version-line">Version: …</div>
-  </header>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">TTM</div>
+      <div class="brand-copy">
+        <strong>Twitch Tab Manager</strong>
+        <span>Playback control center</span>
+      </div>
+    </div>
 
-  <div class="tabs">
-    <div class="tab active" data-tab="settings">Settings</div>
-    <div class="tab" data-tab="changelog">Changelog</div>
-    <div class="tab" data-tab="help">Help</div>
-    <div class="tab" data-tab="debug">Debug</div>
-  </div>
+    <div class="nav-label">Manage</div>
+    <div class="tabs">
+      <div class="tab active" data-tab="settings" data-title="Overview" data-description="Core behavior, playback, and a live status snapshot."><span class="tab-icon">01</span>Overview</div>
+      <div class="tab" data-tab="channels" data-title="Channels" data-description="Follows, priority groups, favorites, rotation candidates, and blacklist."><span class="tab-icon">02</span>Channels</div>
+      <div class="tab" data-tab="rotation" data-title="Rotation" data-description="Configure extra rotation capacity and inspect live slot state."><span class="tab-icon">03</span>Rotation</div>
+      <div class="tab" data-tab="streaks" data-title="Streak Rescue" data-description="Detect at-risk watch streaks and automatically watch the rescue VOD."><span class="tab-icon">04</span>Streak Rescue</div>
 
-  <section id="panel-settings" class="panel active">
-    <div class="stack">
-      <section class="card">
-        <p class="note">These values override the packaged files. Export and import can be used for backup or migration.</p>
-      </section>
+      <div class="nav-label">Tools</div>
+      <div class="tab" data-tab="features" data-title="Features" data-description="Search the current feature set and see recent additions or updates."><span class="tab-icon">05</span>Features</div>
+      <div class="tab" data-tab="advanced" data-title="Advanced" data-description="Raw configuration, imports, exports, and recovery tools."><span class="tab-icon">06</span>Advanced</div>
+      <div class="tab" data-tab="debug" data-title="Debug" data-description="Run diagnostics and inspect internal state when something acts weird."><span class="tab-icon">07</span>Debug</div>
+      <div class="tab" data-tab="help" data-title="Help & Setup" data-description="Twitch API setup, token tools, and basic usage notes."><span class="tab-icon">08</span>Help</div>
+    </div>
 
-      <section class="card">
-        <h2>Quick Settings</h2>
-        <p class="small">These controls update the same stored config as the JSON editor below.</p>
+    <div class="sidebar-foot">
+      Background focus policy: passive only. TTM does not intentionally focus or defocus browser windows.
+      <div id="versionLine" class="version-line">Version: …</div>
+    </div>
+  </aside>
 
-        <div class="quick-grid">
-          <div class="subcard">
-            <div class="two">
-              <label class="field">
-                <span class="label-title">Live Source</span>
-                <select id="liveSource">
-                  <option value="auto">auto</option>
-                  <option value="helix">helix</option>
-                  <option value="following_html">following_html</option>
-                </select>
-              </label>
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="pageTitle">Overview</h1>
+        <p id="pageSubtitle">Core behavior, playback, and a live status snapshot.</p>
+      </div>
+      <div class="topbar-actions">
+        <button id="dashboardRefresh" class="ghost">Refresh</button>
+        <button id="dashboardForcePoll" class="primary">Force Poll</button>
+      </div>
+    </header>
 
-              <label class="field">
-                <span class="label-title">Check Interval (sec)</span>
-                <input id="checkIntervalSec" type="number" min="10" step="1">
-              </label>
-
-              <label>
-                <strong>Max Tabs</strong><br>
-                <input id="maxTabs" type="number" min="1" step="1">
-                <div class="small" style="margin-top:6px;">More than 8 is not recommended.</div>
-              </label>
-
-              <label class="field">
-                <span class="label-title">Enabled</span>
-                <select id="enabledSelect">
-                  <option value="true">Enabled</option>
-                  <option value="false">Disabled</option>
-                </select>
-              </label>
+    <div class="content">
+      <section id="panel-settings" class="panel active">
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <div class="eyebrow">Live status</div>
+                <h2>Manager Overview</h2>
+                <p class="note">A quick snapshot from the background worker. It refreshes while this page is open.</p>
+              </div>
+              <span id="dashHealthPill" class="status-pill">Checking…</span>
             </div>
-
-            <h4 class="section-title" style="margin-top:14px;">Playback</h4>
-            <div class="checkbox-grid">
-              <label class="checkbox-row"><input id="forceUnmute" type="checkbox"> Force unmute</label>
-              <label class="checkbox-row"><input id="unmuteStreams" type="checkbox"> Unmute streams</label>
-              <label class="checkbox-row"><input id="forceResume" type="checkbox"> Force resume</label>
-              <label class="checkbox-row"><input id="autoplayStreams" type="checkbox"> Autoplay streams</label>
+            <div class="dashboard-grid">
+              <div class="metric"><div class="metric-label">Manager</div><div id="dashEnabled" class="metric-value">—</div><div class="metric-sub">master state</div></div>
+              <div class="metric"><div class="metric-label">Live</div><div id="dashLive" class="metric-value">—</div><div class="metric-sub">configured channels</div></div>
+              <div class="metric"><div class="metric-label">Managed tabs</div><div id="dashManaged" class="metric-value">—</div><div class="metric-sub">TTM-owned streams</div></div>
+              <div class="metric"><div class="metric-label">Rotation</div><div id="dashRotation" class="metric-value">—</div><div class="metric-sub">active / requested slots</div></div>
+              <div class="metric"><div class="metric-label">Streak rescue</div><div id="dashRescue" class="metric-value">—</div><div class="metric-sub">queue / active</div></div>
             </div>
+          </section>
 
-            <h4 class="section-title" style="margin-top:14px;">Soft Wake</h4>
-            <div class="checkbox-grid">
-              <label class="checkbox-row"><input id="softWakeTabs" type="checkbox"> Enable soft wake for managed tabs</label>
-              <label class="checkbox-row"><input id="softWakeFocusedOnly" type="checkbox"> Only when browser is focused</label>
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <div class="eyebrow">Core</div>
+                <h2>General Management</h2>
+                <p class="note">The everyday settings you are most likely to change.</p>
+              </div>
             </div>
-          </div>
-          
-          <label class="checkbox-row">
-            <input id="closeUnfollowedTabs" type="checkbox">
-            Close managed tabs that drift to unfollowed channels
-          </label>
+            <div class="grid">
+              <div class="subcard">
+                <div class="two">
+                  <label class="field">
+                    <span class="label-title">Manager</span>
+                    <select id="enabledSelect"><option value="true">Enabled</option><option value="false">Disabled</option></select>
+                  </label>
+                  <label class="field">
+                    <span class="label-title">Live source</span>
+                    <select id="liveSource"><option value="auto">Auto</option><option value="helix">Helix</option><option value="following_html">Following HTML</option></select>
+                  </label>
+                  <label class="field">
+                    <span class="label-title">Check interval (seconds)</span>
+                    <input id="checkIntervalSec" type="number" min="10" step="1">
+                  </label>
+                  <label class="field">
+                    <span class="label-title">Normal max tabs</span>
+                    <input id="maxTabs" type="number" min="1" step="1">
+                  </label>
+                </div>
+                <p class="small">Rotation slots are extra capacity above Normal Max Tabs and may be borrowed by normal streams while rotation does not need them.</p>
+              </div>
 
-          <label class="checkbox-row">
-            <input id="allowExtraTwitchTabs" type="checkbox">
-            Keep extra Twitch tabs open unless they are raid redirects
-          </label>
-          <div class="subcard">
-            <label class="field">
-              <span class="label-title">Blacklist (one channel per line)</span>
-              <textarea id="blacklistBox" class="miniTA"></textarea>
-            </label>
-            
-            <label class="field">
-              <span class="label-title">Temp Allow Duration (hours)</span>
-              <input id="tempWhitelistHours" type="number" min="1" step="1">
-            </label>
+              <div class="subcard">
+                <h4>Tab cleanup</h4>
+                <div class="checkbox-grid">
+                  <label class="checkbox-row"><input id="closeUnfollowedTabs" type="checkbox"> Close managed tabs that drift to an unfollowed channel</label>
+                  <label class="checkbox-row"><input id="allowExtraTwitchTabs" type="checkbox"> Keep user-open Twitch tabs unless they are TTM-window raid/orphan cleanup targets</label>
+                </div>
+                <label class="field" style="margin-top:12px;">
+                  <span class="label-title">Temporary allow duration (hours)</span>
+                  <input id="tempWhitelistHours" type="number" min="1" step="1">
+                </label>
+              </div>
+            </div>
+          </section>
 
+          <section class="card">
+            <div class="card-head">
+              <div>
+                <div class="eyebrow">Playback</div>
+                <h2>Playback & Recovery</h2>
+                <p class="note">Player-level behavior only. Browser tab mute state is preserved separately.</p>
+              </div>
+              <span class="status-pill ok">Browser mute preserved</span>
+            </div>
+            <div class="grid">
+              <div class="subcard">
+                <h4>Twitch player</h4>
+                <div class="checkbox-grid">
+                  <label class="checkbox-row"><input id="forceUnmute" type="checkbox"> Force Twitch player unmute</label>
+                  <label class="checkbox-row"><input id="unmuteStreams" type="checkbox"> Unmute Twitch streams</label>
+                  <label class="checkbox-row"><input id="forceResume" type="checkbox"> Resume paused playback</label>
+                  <label class="checkbox-row"><input id="autoplayStreams" type="checkbox"> Autoplay managed streams</label>
+                </div>
+                <p class="small">These affect Twitch's video player, not Brave's tab mute button. TTM does not browser-mute or browser-unmute tabs.</p>
+              </div>
+              <div class="subcard">
+                <h4>Legacy soft wake</h4>
+                <div class="checkbox-grid">
+                  <label class="checkbox-row"><input id="softWakeTabs" type="checkbox"> Enable soft wake for managed tabs</label>
+                  <label class="checkbox-row"><input id="softWakeFocusedOnly" type="checkbox"> Only while browser is focused</label>
+                </div>
+                <p class="small">The current watchdog prefers background-safe play and visibility recovery. Normal managed streams are not intentionally focused.</p>
+              </div>
+            </div>
             <div class="btns">
-              <button id="quickSave" class="primary">Save Quick Settings</button>
-              <button id="quickApplyReload">Save Quick Settings &amp; Reload</button>
+              <button id="quickSave" class="primary">Save Overview Settings</button>
+              <button id="quickApplyReload">Save & Reload Background</button>
             </div>
-
             <div id="quickStatus" class="status"></div>
-            <p class="small">Priority stays in its own ordered editor below. Follows stay in the follows box.</p>
-          </div>
+          </section>
         </div>
       </section>
 
-      <section class="card">
-        <div class="grid">
-          <div>
-            <label class="field">
-              <span class="label-title">Config (JSON)</span>
-              <textarea id="cfg"></textarea>
-            </label>
-
-            <div class="btns">
-              <button id="saveCfg" class="primary">Save</button>
-              <button id="applyReload">Apply &amp; Reload</button>
-              <button id="exportCfg">Export</button>
-              <button id="importCfg">Import</button>
-              <button id="resetCfg">Reset to Packaged</button>
-              <button id="refreshCfg">Refresh From Storage</button>
+      <section id="panel-channels" class="panel">
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <div><div class="eyebrow">Base list</div><h2>Followed Channels</h2><p class="note">One Twitch username per line. This is the broad pool TTM can manage.</p></div>
+              <span class="status-pill">Base bucket</span>
             </div>
+            <div class="grid">
+              <div>
+                <textarea id="fol" class="miniTA" style="min-height:320px" placeholder="one username per line"></textarea>
+                <div class="btns">
+                  <button id="saveFol" class="primary">Save Follows</button>
+                  <button id="fetchFollows">Fetch My Follows</button>
+                  <select id="fetchMode" title="How to fetch" style="width:auto;min-width:190px;"><option value="active">Open active tab</option><option value="current">Use current Twitch tab</option></select>
+                </div>
+                <div class="btns">
+                  <button id="exportFol">Export</button><button id="importFol">Import</button><button id="resetFol">Reset Packaged</button><button id="refreshFol">Refresh</button>
+                </div>
+                <div id="folStatus" class="status"></div>
+              </div>
+              <div id="followSyncHistoryWrap" class="subcard">
+                <h4>Last Follow Sync</h4>
+                <pre id="followSyncHistoryOut" class="miniTA" style="white-space:pre-wrap;min-height:220px;">No follow sync has been recorded yet.</pre>
+                <div class="btns"><button id="forcePoll">Force Poll Now</button><button id="reloadConfig">Reload Background Config</button></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="card-head">
+              <div><div class="eyebrow">Hierarchy</div><h2>Special Channel Buckets</h2><p class="note">A normal follow may also belong to one special bucket. Special buckets are mutually exclusive with each other.</p></div>
+            </div>
+            <div id="advancedBucketsWrap" class="grid-3">
+              <div class="subcard">
+                <h4>Favorites</h4>
+                <p class="small">Strongest priority. Preferred above every other ordinary channel group.</p>
+                <textarea id="favoritesBox" class="miniTA" placeholder="one username per line"></textarea>
+              </div>
+              <div class="subcard">
+                <h4>Priority</h4>
+                <p class="small">Ordered strongest to weakest. Used before ordinary follows.</p>
+                <textarea id="priorityBox" class="miniTA" placeholder="one username per line"></textarea>
+                <div class="btns"><button id="prioritySave" class="primary">Save Priority</button></div>
+              </div>
+              <div class="subcard">
+                <h4>Rotation Candidates</h4>
+                <p class="small">Channels eligible for reusable rotation slots.</p>
+                <textarea id="rotationBox" class="miniTA" placeholder="one username per line"></textarea>
+              </div>
+              <div class="subcard">
+                <h4>Low Priority</h4>
+                <p class="small">Opens only when higher-priority demand leaves room.</p>
+                <textarea id="lowPriorityBox" class="miniTA" placeholder="one username per line"></textarea>
+              </div>
+              <div class="subcard">
+                <h4>Blacklist</h4>
+                <p class="small">Never managed automatically.</p>
+                <textarea id="blacklistBox" class="miniTA" placeholder="one username per line"></textarea>
+              </div>
+            </div>
+            <div id="channelBucketsStatus" class="status"></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="panel-rotation" class="panel">
+        <div class="stack">
+          <section class="card">
+            <div class="card-head">
+              <div><div class="eyebrow">Capacity</div><h2>Rotation Settings</h2><p class="note">Rotation capacity is extra above Normal Max Tabs. Unused rotation capacity can be borrowed by normal streams.</p></div>
+            </div>
+            <div class="grid">
+              <div class="subcard">
+                <div class="two">
+                  <label class="field"><span class="label-title">Rotation</span><select id="rotationEnabled"><option value="false">Disabled</option><option value="true">Enabled</option></select></label>
+                  <label class="field"><span class="label-title">Extra rotation slots</span><input id="rotationSlotCount" type="number" min="0" step="1"></label>
+                  <label class="field"><span class="label-title">Rotation interval (minutes)</span><input id="rotationIntervalMin" type="number" min="5" step="1"></label>
+                  <label class="field"><span class="label-title">Cooldown (minutes)</span><input id="rotationCooldownMin" type="number" min="5" step="1"></label>
+                </div>
+                <label class="field" style="margin-top:10px;"><span class="label-title">Include Low Priority in rotation</span><select id="rotationIncludeLowPriority"><option value="false">No</option><option value="true">Yes</option></select></label>
+                <div id="rotationSettingsStatus" class="status"></div>
+              </div>
+              <div class="callout">
+                <strong>Capacity example</strong><br>
+                Normal Max Tabs 4 + Rotation Slots 2 means TTM may use up to 6 managed stream tabs. If only one rotation stream needs a slot, the spare rotation slot may temporarily hold another normal stream.
+              </div>
+            </div>
+          </section>
+          <section id="rotationStatusCard" class="card"><h2>Rotation Status</h2><p class="small">Loading live rotation state…</p></section>
+        </div>
+      </section>
+
+      <section id="panel-streaks" class="panel">
+        <div class="stack">
+          <section id="streakRescueCard" class="card">
+            <div class="card-head">
+              <div><div class="eyebrow">Watch streaks</div><h2>Streak Rescue</h2><p class="note">Detects Twitch's at-risk watch-streak entries and can automatically watch the rescue VOD in a background-only tab.</p></div>
+              <span id="streakModeBadge" class="status-pill">Checking…</span>
+            </div>
+
+            <div id="streakDetectWarning" class="callout warn" style="display:none;margin-bottom:12px;">
+              Detect-only mode is enabled. TTM will find at-risk streaks but will not open a rescue VOD until you switch to Automatic rescue.
+            </div>
+
+            <div class="grid">
+              <div class="subcard">
+                <label class="checkbox-row"><input id="streakRescueEnabled" type="checkbox"> Enable Streak Rescue</label>
+                <label class="field" style="margin-top:10px;"><span class="label-title">Mode</span><select id="streakRescueMode"><option value="auto">Automatic rescue</option><option value="detect">Detect only</option></select></label>
+                <div class="two" style="margin-top:10px;">
+                  <label class="field"><span class="label-title">Required VOD watch (min)</span><input id="streakRequiredMin" type="number" min="5" step="1"></label>
+                  <label class="field"><span class="label-title">Extra safety time (min)</span><input id="streakGraceMin" type="number" min="0" step="1"></label>
+                  <label class="field"><span class="label-title">Confirmation check (sec)</span><input id="streakConfirmSec" type="number" min="15" step="5"></label>
+                  <label class="field"><span class="label-title">Retry after failure (min)</span><input id="streakRetryMin" type="number" min="5" step="1"></label>
+                </div>
+                <p class="small">One dedicated rescue slot for now. Recovery remains background-only: no tab activation and no browser-window focus request.</p>
+                <div class="btns"><button id="streakRescueSave" class="primary">Save Rescue Settings</button><button id="streakRescueTick">Run Rescue Check</button><button id="streakRescueRefresh">Refresh Status</button></div>
+                <div id="streakRescueSaveStatus" class="status"></div>
+              </div>
+
+              <div class="subcard">
+                <h4>Scanner & Rescue State</h4>
+                <div class="rescue-stats">
+                  <div class="rescue-stat"><span>Last scan</span><strong id="streakLastScan">—</strong></div>
+                  <div class="rescue-stat"><span>At risk</span><strong id="streakDetected">—</strong></div>
+                  <div class="rescue-stat"><span>Queued</span><strong id="streakQueue">—</strong></div>
+                  <div class="rescue-stat"><span>Active</span><strong id="streakActive">—</strong></div>
+                </div>
+                <pre id="streakRescueStatus" class="miniTA" style="white-space:pre-wrap;min-height:220px;"></pre>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="panel-features" class="panel">
+        <section class="card">
+          <div class="feature-header">
+            <div><div class="eyebrow">Reference</div><h2>Features</h2><p class="small">A searchable overview. Recent additions and changes are marked automatically.</p></div>
+            <div id="featureVersion" class="feature-version">Current build: …</div>
+          </div>
+          <div class="feature-toolbar">
+            <label class="field"><span class="label-title">Search features</span><input id="featureSearch" type="text" placeholder="Search focus, rotation, streaks, follows…"></label>
+            <label class="field"><span class="label-title">Category</span><select id="featureCategory"><option value="all">All categories</option></select></label>
+          </div>
+          <div id="featureSummary" class="feature-summary"></div>
+          <div id="featureList" class="feature-list"></div>
+        </section>
+      </section>
+
+      <section id="panel-advanced" class="panel">
+        <div class="stack">
+          <section class="card">
+            <div class="card-head"><div><div class="eyebrow">Raw config</div><h2>Advanced Configuration</h2><p class="note">For direct edits, backup, migration, or recovering a broken setting.</p></div></div>
+            <label class="field"><span class="label-title">Config JSON</span><textarea id="cfg" style="min-height:420px"></textarea></label>
+            <div class="btns"><button id="saveCfg" class="primary">Save</button><button id="applyReload">Apply & Reload</button><button id="exportCfg">Export</button><button id="importCfg">Import</button><button id="resetCfg">Reset Packaged</button><button id="refreshCfg">Refresh Storage</button></div>
             <div id="cfgStatus" class="status"></div>
-          </div>
-
-          <div>
-            <label class="field">
-              <span class="label-title">Follows (one <em>username</em> per line)</span>
-              <p class="small">Example: for <code class="inline">twitch.tv/sery_bot</code>, enter <code class="inline">sery_bot</code> in lowercase.</p>
-              <textarea id="fol"></textarea>
-            </label>
-
-            <div class="btns">
-              <button id="saveFol" class="primary">Save</button>
-              <button id="exportFol">Export</button>
-              <button id="importFol">Import</button>
-              <button id="resetFol">Reset to Packaged</button>
-              <button id="refreshFol">Refresh From Storage</button>
-            </div>
-
-            <div class="btns">
-              <select id="fetchMode" title="How to fetch">
-                <option value="active">Open active tab (auto-scroll)</option>
-                <option value="current">Use my current Twitch tab</option>
-              </select>
-              <button id="fetchFollows">Fetch My Follows</button>
-            </div>
-
-            <div id="folStatus" class="status"></div>
-
-            <div class="btns" style="margin-top: 12px;">
-              <button id="forcePoll">Force Poll Now</button>
-              <button id="reloadConfig">Reload Config in Background</button>
-            </div>
-
-            <p class="small">Apply &amp; Reload saves your JSON and asks the background worker to reload immediately.</p>
-          </div>
+          </section>
         </div>
       </section>
 
-      <section class="card">
-        <h3>Priority Channels</h3>
-        <p class="small">One channel per line, lowercase. Ordered from strongest to weakest priority.</p>
-        <textarea id="priorityBox" rows="6" style="width:100%"></textarea>
-        <div class="btns">
-          <button id="prioritySave" class="primary">Save Priority</button>
-        </div>
+      <section id="panel-debug" class="panel">
+        <section class="card">
+          <div class="card-head"><div><div class="eyebrow">Diagnostics</div><h2>Debug</h2><p class="note">Use this when a stream, rotation slot, focus event, or rescue action behaves incorrectly.</p></div></div>
+          <div class="btns"><button id="dbgRun" class="primary">Run Diagnostics</button><button id="dbgCopy">Copy Results</button><button id="dbgClear">Clear Logs</button></div>
+          <textarea id="dbgOut" class="miniTA" style="min-height:390px" readonly></textarea>
+          <h3 style="margin-top:16px;">Open Channel Test</h3>
+          <div class="row"><input id="dbgChannel" type="text" placeholder="channel login (lowercase)" style="flex:1;min-width:260px;"><button id="dbgOpen">Try Open</button></div>
+        </section>
+      </section>
+
+      <section id="panel-help" class="panel">
+        <section class="card help">
+          <div class="eyebrow">Setup</div>
+          <h2>Help & Twitch API</h2>
+          <ol>
+            <li>Keep each Twitch username on its own line in <strong>Channels → Followed Channels</strong>.</li>
+            <li>Use <code class="inline">live_source: auto</code> for normal operation.</li>
+            <li>Helix is the most precise live source; the HTML fallback is available when you do not want tokens.</li>
+          </ol>
+
+          <h3>Helix Setup</h3>
+          <ol>
+            <li>Create a Twitch app at <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a>.</li>
+            <li>Use OAuth Redirect <code class="inline">http://localhost</code>.</li>
+            <li>Copy the Client ID and keep the Client Secret private.</li>
+            <li>Generate an App Access Token using the tools below.</li>
+          </ol>
+
+          <div class="grid">
+            <div class="subcard">
+              <label class="field"><span class="label-title">Client ID</span><input id="cid" type="text" placeholder="YOUR_CLIENT_ID_HERE"></label>
+              <label class="field" style="margin-top:10px;"><span class="label-title">Client Secret</span><input id="csecret" type="password" placeholder="YOUR_CLIENT_SECRET_HERE"></label>
+              <div class="btns"><button id="btnApplyCIDToCfg">Insert Client ID into Config JSON</button></div>
+              <label class="field" style="margin-top:12px;"><span class="label-title">Access Token</span><input id="tok" type="text" placeholder="paste token here"></label>
+              <div class="btns"><button id="btnApplyToken" class="primary">Insert Token</button></div>
+            </div>
+            <div class="subcard">
+              <h4>PowerShell</h4>
+              <textarea id="ps1Out" class="miniTA" readonly></textarea>
+              <div class="btns"><button id="btnCopyPS1" class="primary">Copy PowerShell</button></div>
+              <h4 style="margin-top:12px;">cURL</h4>
+              <textarea id="curlOut" class="miniTA" readonly></textarea>
+              <div class="btns"><button id="btnCopyCurl" class="primary">Copy cURL</button></div>
+            </div>
+          </div>
+
+          <p class="small">Tokens expire. If Helix begins returning 401 errors, generate a new App Access Token and update the config.</p>
+        </section>
       </section>
     </div>
-  </section>
-
-  <section id="panel-changelog" class="panel">
-  <section class="card">
-    <h2>Changelog</h2>
-    <p class="small">Loaded from the bundled README.md inside the extension package.</p>
-
-    <div class="btns">
-      <button id="reloadChangelog">Reload Changelog</button>
-    </div>
-
-    <div id="changelogStatus" class="status"></div>
-    <pre id="changelogOut" style="white-space: pre-wrap; line-height: 1.5; min-height: 320px;"></pre>
-  </section>
-  </section>
-
-  <section id="panel-help" class="panel">
-    <section class="card help">
-      <h2>How to Use</h2>
-      <ol>
-        <li>Put each channel <strong>username</strong> on its own line in <strong>Follows</strong>.</li>
-        <li>In <strong>Config</strong>, set <code class="inline">client_id</code> and <code class="inline">access_token</code>, or use <code class="inline">"live_source":"following_html"</code>.</li>
-        <li>Load the extension in <code class="inline">chrome://extensions</code>, turn it on, then hit <strong>Force Poll</strong>.</li>
-      </ol>
-
-      <h3>Helix Setup (recommended)</h3>
-      <p>Prefer Helix for the most precise live checks. If you do not want tokens, use the HTML fallback.</p>
-      <ol>
-        <li>Create a Twitch app at <a href="https://dev.twitch.tv/console/apps" target="_blank" rel="noopener">dev.twitch.tv/console/apps</a>.</li>
-        <li>Use OAuth Redirect <code class="inline">http://localhost</code>.</li>
-        <li>Copy your <strong>Client ID</strong> and keep your <strong>Client Secret</strong> private.</li>
-        <li>Generate an <strong>App Access Token</strong> using the snippet generator below.</li>
-      </ol>
-
-      <h3>Token Snippet Generator</h3>
-      <div class="two">
-        <div>
-          <div class="row">
-            <label for="cid"><strong>Client ID:</strong></label>
-            <input id="cid" type="text" placeholder="YOUR_CLIENT_ID_HERE" style="flex:1;min-width:260px;">
-          </div>
-
-          <div class="row" style="margin-top:6px;">
-            <label for="csecret"><strong>Client Secret:</strong></label>
-            <input id="csecret" type="password" placeholder="YOUR_CLIENT_SECRET_HERE" style="flex:1;min-width:260px;">
-          </div>
-
-          <div class="btns">
-            <button id="btnApplyCIDToCfg">Insert Client ID into Config JSON</button>
-          </div>
-
-          <div class="row" style="margin-top:8px;">
-            <label for="tok"><strong>Access Token:</strong></label>
-            <input id="tok" type="text" placeholder="paste token here" style="flex:1;min-width:260px;">
-            <button id="btnApplyToken" class="primary">Insert Token</button>
-          </div>
-
-          <p class="small">After you run the command and get <code class="inline">access_token</code>, paste that token into your config JSON.</p>
-        </div>
-
-        <div>
-          <h4>PowerShell (Windows)</h4>
-          <textarea id="ps1Out" class="miniTA" readonly></textarea>
-          <div class="btns"><button id="btnCopyPS1" class="primary">Copy PowerShell</button></div>
-
-          <h4 style="margin-top:12px;">cURL</h4>
-          <textarea id="curlOut" class="miniTA" readonly></textarea>
-          <div class="btns"><button id="btnCopyCurl" class="primary">Copy cURL</button></div>
-        </div>
-      </div>
-
-      <h3>Example <code class="inline">config.json</code></h3>
-      <pre><code>{
-  "client_id": "YOUR_TWITCH_CLIENT_ID",
-  "access_token": "YOUR_APP_ACCESS_TOKEN",
-  "live_source": "auto",
-  "force_unmute": true,
-  "force_resume": true,
-  "check_interval_sec": 60,
-  "unmute_streams": true,
-  "max_tabs": 8,
-  "blacklist": []
-}</code></pre>
-
-      <p class="small">Tokens expire. If live checks start failing with <code class="inline">401</code>, generate a new token and update your config.</p>
-    </section>
-  </section>
-
-  <section id="panel-debug" class="panel">
-    <section class="card">
-      <h2>Debug</h2>
-      <div class="btns">
-        <button id="dbgRun" class="primary">Run Diagnostics</button>
-        <button id="dbgCopy">Copy Results</button>
-        <button id="dbgClear">Clear Logs</button>
-      </div>
-
-      <p class="small">Use Run Diagnostics while some follows are live. Results include settings, live list, open channels, capacity, and internal logs.</p>
-      <textarea id="dbgOut" class="miniTA" style="min-height:260px" readonly></textarea>
-
-      <h3 style="margin-top:16px;">Open Channel Test</h3>
-      <div class="row">
-        <input id="dbgChannel" type="text" placeholder="channel login (lowercase)" style="flex:1;min-width:260px;">
-        <button id="dbgOpen">Try Open</button>
-      </div>
-    </section>
-  </section>
+  </main>
 </div>
 
 <input id="fileCfg" type="file" accept=".json,application/json" style="display:none" />

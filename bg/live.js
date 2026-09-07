@@ -20,11 +20,87 @@ async function execScriptMV3(tabId, func) {
   const norm = (s) => String(s || "").trim().toLowerCase();
   const uniq = (arr) => [...new Set((arr || []).map(norm).filter(Boolean))];
 
+  let sidebarState = { live: [], streaks: [], at: 0, sourceUrl: "", reports: 0 };
+  const sidebarReports = new Map();
+  const SIDEBAR_REPORT_TTL_MS = 90_000;
+  let helixHealthy = false;
+  let gqlHealthy = false;
+  let htmlFollowingHealthy = false;
+  let lastDetectionMeta = { healthy: true, sources: [], at: 0, probe: { checked: 0, responded: 0, live: [], offline: [], unknown: [] } };
+  let currentProbeHealth = { checked: 0, responded: 0, live: [], offline: [], unknown: [] };
+
+  function isRaidSourceUrl(url = "") {
+    try { return new URL(String(url || "")).searchParams.get("referrer") === "raid"; }
+    catch { return /(?:[?&])referrer=raid(?:&|$)/i.test(String(url || "")); }
+  }
+
+  function rebuildSidebarAggregate() {
+    const now = Date.now();
+    const live = new Set();
+    const streakByLogin = new Map();
+    let newestAt = 0;
+    let newestSourceUrl = "";
+    let reports = 0;
+
+    for (const [key, report] of [...sidebarReports.entries()]) {
+      if (!report?.at || now - report.at > SIDEBAR_REPORT_TTL_MS) {
+        sidebarReports.delete(key);
+        continue;
+      }
+      // Raid pages have repeatedly reported an empty/partial sidebar and used
+      // to erase a healthy report from another Twitch tab. Ignore them as a
+      // discovery source, while still keeping ordinary Twitch pages aggregated.
+      if (isRaidSourceUrl(report.sourceUrl)) continue;
+      reports += 1;
+      for (const login of report.live || []) live.add(norm(login));
+      for (const item of report.streaks || []) {
+        const login = norm(item?.login);
+        const streak = Number(item?.streak);
+        if (login && Number.isFinite(streak)) streakByLogin.set(login, { login, streak });
+      }
+      if (report.at >= newestAt) {
+        newestAt = report.at;
+        newestSourceUrl = report.sourceUrl || "";
+      }
+    }
+
+    sidebarState = {
+      live: [...live].filter(Boolean),
+      streaks: [...streakByLogin.values()],
+      at: newestAt,
+      sourceUrl: newestSourceUrl,
+      reports
+    };
+  }
+
+  function updateSidebarState(msg = {}, sourceTabId = null) {
+    const key = sourceTabId == null ? `url:${String(msg.sourceUrl || "")}` : `tab:${Number(sourceTabId)}`;
+    sidebarReports.set(key, {
+      live: uniq(msg.live || []),
+      streaks: Array.isArray(msg.streaks) ? msg.streaks : [],
+      at: Date.now(),
+      sourceUrl: String(msg.sourceUrl || "")
+    });
+    rebuildSidebarAggregate();
+  }
+
+  function getFreshSidebarLive() {
+    rebuildSidebarAggregate();
+    if (!sidebarState.at || Date.now() - sidebarState.at > SIDEBAR_REPORT_TTL_MS) return [];
+    return sidebarState.live.slice();
+  }
+
   function getConfiguredUnion(cfg) {
     return uniq(
       (cfg?.followUnion && cfg.followUnion.length
         ? cfg.followUnion
-        : [...(cfg?.follows || []), ...(cfg?.priority || [])])
+        : [
+            ...(cfg?.favorites || []),
+            ...(cfg?.priority || []),
+            ...(cfg?.follows || []),
+            ...(cfg?.rotation || []),
+            ...(cfg?.low_priority || [])
+          ])
     );
   }
 
@@ -34,6 +110,7 @@ async function execScriptMV3(tabId, func) {
   }
 
   async function helixGetLiveLogins(cfg) {
+    helixHealthy = false;
     const logins = getConfiguredUnion(cfg);
     if (!cfg.client_id || !cfg.access_token || logins.length === 0) return [];
 
@@ -57,6 +134,7 @@ async function execScriptMV3(tabId, func) {
           continue;
         }
 
+        helixHealthy = true;
         const j = await r.json();
         for (const it of (j.data || [])) {
           if (it.user_login) out.add(norm(it.user_login));
@@ -72,12 +150,15 @@ async function execScriptMV3(tabId, func) {
     return result;
   }
 
-  async function fetchText(url) {
+  async function fetchText(url, timeoutMs = 7000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const r = await fetch(url, {
         cache: "no-store",
         credentials: "omit",
         mode: "cors",
+        signal: controller.signal,
         headers: {
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         }
@@ -86,6 +167,8 @@ async function execScriptMV3(tabId, func) {
       return await r.text();
     } catch {
       return "";
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -111,7 +194,7 @@ async function execScriptMV3(tabId, func) {
     return checks.some((re) => re.test(html));
   }
   
-function htmlLooksOffline(html) {
+function htmlLooksOffline(html, login = "") {
   if (!html) return false;
 
   if (htmlHasLiveFlags(html)) return false;
@@ -121,13 +204,37 @@ function htmlLooksOffline(html) {
     /check out this [\s\S]{0,180}? stream from \d+\s+(minute|minutes|hour|hours|day|days)\s+ago/i,
     /stream from \d+\s+(minute|minutes|hour|hours|day|days)\s+ago/i,
     /data-a-target=["']channel-offline-info["']/i,
-    /data-a-target=["']offline-channel-main-content["']/i
+    /data-a-target=["']offline-channel-main-content["']/i,
+    /player-overlay-offline-channel-text/i
   ];
 
-  return checks.some((re) => re.test(html));
+  if (checks.some((re) => re.test(html))) return true;
+
+  // Twitch's fresh server-rendered channel HTML often has no literal OFFLINE
+  // token. When the response positively identifies the requested channel but
+  // contains none of the live-broadcast markers above, treat it as offline.
+  // Requiring two independent channel-identity signals avoids classifying a
+  // generic/error shell as offline.
+  const key = norm(login);
+  if (!key) return false;
+  const lower = String(html).toLowerCase();
+  const channelUrl = `https://www.twitch.tv/${key}`;
+  const canonical =
+    lower.includes(`rel="canonical" href="${channelUrl}"`) ||
+    lower.includes(`href="${channelUrl}" rel="canonical"`) ||
+    lower.includes(`rel='canonical' href='${channelUrl}'`) ||
+    lower.includes(`href='${channelUrl}' rel='canonical'`);
+  const personSchema = lower.includes('"@type":"person"') && lower.includes(`"url":"${channelUrl}"`);
+  const channelUrlJson = lower.includes(`"url":"${channelUrl}"`);
+  const nonLiveTitle = /<meta[^>]+(?:name|property)=["'](?:title|og:title)["'][^>]+content=["'][^"']+ - Twitch["']/i.test(html) &&
+                       !/Live on Twitch/i.test(html);
+
+  const identitySignals = [canonical, personSchema || channelUrlJson, nonLiveTitle].filter(Boolean).length;
+  return identitySignals >= 2;
 }
 
   async function probeChannelPagesLive(cfg, need) {
+    currentProbeHealth = { checked: 0, responded: 0, live: [], offline: [], unknown: [] };
     const priority = Array.isArray(cfg?.priority) ? cfg.priority : [];
     const ordered = uniq([...(priority || []), ...getConfiguredUnion(cfg)]);
 
@@ -136,8 +243,8 @@ function htmlLooksOffline(html) {
       return [];
     }
 
-    const concurrency = 6;
-    const hardCap = Math.min(Math.max(need || 4, 1), ordered.length);
+    const concurrency = 16;
+    const hardCap = ordered.length;
     const live = [];
     let idx = 0;
 
@@ -153,16 +260,18 @@ function htmlLooksOffline(html) {
         const login = ordered[i];
         try {
           const html = await fetchText(`https://www.twitch.tv/${login}`);
-          const isLive = htmlHasLiveFlags(html);
-          const isOffline = htmlLooksOffline(html);
+          currentProbeHealth.checked += 1;
+          const responded = !!(html && html.length > 500);
+          if (responded) currentProbeHealth.responded += 1;
+          const isLive = responded && htmlHasLiveFlags(html);
+          const isOffline = responded && htmlLooksOffline(html, login);
+          if (isLive && !isOffline) currentProbeHealth.live.push(login);
+          else if (isOffline) currentProbeHealth.offline.push(login);
+          else currentProbeHealth.unknown.push(login);
 
-          log("probe_channel", {
-            login,
-            isLive,
-            isOffline,
-            html_len: html.length
-          });
-
+          // Keep the normal log compact. Per-channel probe logging created
+          // hundreds of entries per minute and buried the recovery/raid events
+          // that Diagnose actually needs. Errors still log individually.
           if (isLive && !isOffline) {
             live.push(login);
           }
@@ -175,11 +284,21 @@ function htmlLooksOffline(html) {
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
     const result = uniq(live);
-    log("probe_result", { count: result.length, channels: result });
+    log("probe_result", {
+      count: result.length,
+      channels: result,
+      checked: currentProbeHealth.checked,
+      responded: currentProbeHealth.responded,
+      offline_count: currentProbeHealth.offline.length,
+      unknown_count: currentProbeHealth.unknown.length,
+      offline_sample: currentProbeHealth.offline.slice(0, 12),
+      unknown_sample: currentProbeHealth.unknown.slice(0, 12)
+    });
     return result;
   }
 
   async function htmlFetchFollowing() {
+  htmlFollowingHealthy = false;
   try {
     const r = await fetch("https://www.twitch.tv/directory/following/live", {
       credentials: "include",
@@ -197,6 +316,7 @@ function htmlLooksOffline(html) {
       return [];
     }
 
+    htmlFollowingHealthy = true;
     const h = await r.text();
 
     const set = new Set();
@@ -225,12 +345,13 @@ function htmlLooksOffline(html) {
 }
 
   async function getWebOAuthTokenFromConfig(cfg) {
+    // A Helix app/user access_token is not automatically a Twitch web OAuth
+    // token. Only use fields that are explicitly intended for web GQL auth.
     const direct =
       cfg?.auth_token ||
       cfg?.oauth_token ||
       cfg?.access_token_web ||
-      cfg?.access_token_user ||
-      cfg?.access_token;
+      cfg?.access_token_user;
 
     if (direct) return String(direct);
 
@@ -240,8 +361,7 @@ function htmlLooksOffline(html) {
         all?.auth_token ||
         all?.oauth_token ||
         all?.access_token_web ||
-        all?.access_token_user ||
-        all?.access_token;
+        all?.access_token_user;
 
       if (fromStore) return String(fromStore);
     } catch {}
@@ -250,6 +370,7 @@ function htmlLooksOffline(html) {
   }
 
   async function gqlFollowingLiveLoginsWithToken(userToken) {
+    gqlHealthy = false;
     if (!userToken) return [];
 
     const body = [{
@@ -279,6 +400,7 @@ function htmlLooksOffline(html) {
       if (!r.ok) return [];
 
       const j = await r.json();
+      gqlHealthy = true;
       const data = (Array.isArray(j) ? j[0] : j)?.data;
       const edges = data?.followedLiveUsers?.edges || data?.user?.following?.live?.edges || [];
 
@@ -306,8 +428,11 @@ function htmlLooksOffline(html) {
     try {
       const configured = getConfiguredUnion(cfg);
       const followCounts = {
-        follows: Array.isArray(cfg?.follows) ? cfg.follows.length : 0,
+        favorites: Array.isArray(cfg?.favorites) ? cfg.favorites.length : 0,
         priority: Array.isArray(cfg?.priority) ? cfg.priority.length : 0,
+        follows: Array.isArray(cfg?.follows) ? cfg.follows.length : 0,
+        rotation: Array.isArray(cfg?.rotation) ? cfg.rotation.length : 0,
+        low_priority: Array.isArray(cfg?.low_priority) ? cfg.low_priority.length : 0,
         followUnion: Array.isArray(cfg?.followUnion) ? cfg.followUnion.length : 0
       };
 
@@ -321,8 +446,14 @@ function htmlLooksOffline(html) {
       const allTwitchTabs = await chrome.tabs.query({ url: ["https://www.twitch.tv/*"] });
       globalThis.TTM_STAB?.onTabsSnapshot?.(allTwitchTabs);
 
-      const capNum = Math.max(1, Number(cfg?.max_tabs || 4) || 4);
       const found = new Set();
+      const healthySources = [];
+
+      const viaSidebar = getFreshSidebarLive();
+      if (viaSidebar.length) {
+        addFound(viaSidebar, "sidebar_dom");
+        healthySources.push("sidebar_dom");
+      }
 
       function addFound(list, source) {
         const filtered = filterConfigured(list, cfg);
@@ -336,7 +467,6 @@ function htmlLooksOffline(html) {
 
           found.add(key);
           added += 1;
-          if (found.size >= capNum) break;
         }
 
         log("live_merge", {
@@ -345,7 +475,7 @@ function htmlLooksOffline(html) {
           filtered_count: filtered.length,
           added,
           total: found.size,
-          target: capNum,
+          target: "all_configured",
           channels: filtered
         });
       }
@@ -358,32 +488,35 @@ function htmlLooksOffline(html) {
       if (cfg?.client_id && cfg?.access_token) {
         log("live_check", "Trying Helix method");
         const viaHelix = await helixGetLiveLogins(cfg);
+        if (helixHealthy) healthySources.push("helix");
         if (viaHelix.length > 0) addFound(viaHelix, "helix");
         else log("live_check", "Helix method returned no results");
       }
 
       const tok = await getWebOAuthTokenFromConfig(cfg);
-      if (found.size < capNum && tok) {
+      if (tok) {
         log("live_check", "Trying GQL method");
         const viaGql = await gqlFollowingLiveLoginsWithToken(tok);
+        if (gqlHealthy) healthySources.push("gql");
         if (viaGql.length > 0) addFound(viaGql, "gql");
         else log("live_check", "GQL method returned no results");
       }
 
-      if (found.size < capNum && configured.length > 0) {
-        log("live_check", `Trying probe method (cap: ${capNum})`);
+      if (configured.length > 0) {
+        log("live_check", `Trying probe method (all configured: ${configured.length})`);
         const viaProbe = await probeChannelPagesLive(cfg, configured.length);
+        if (currentProbeHealth.responded > 0) healthySources.push("probe");
         if (viaProbe.length > 0) addFound(viaProbe, "probe");
         else log("live_check", "Probe method returned no results");
       }
 
       if (
-        found.size < capNum &&
         !cfg?.client_id &&
         !cfg?.access_token
       ) {
         log("live_check", "Trying HTML following method");
         const viaHtml = filterConfigured(await htmlFetchFollowing(), cfg);
+        if (htmlFollowingHealthy) healthySources.push("html_following");
         if (viaHtml.length > 0) addFound(viaHtml, "html_following");
         else log("live_check", "HTML following method returned no configured results");
       } else {
@@ -394,27 +527,48 @@ function htmlLooksOffline(html) {
       cfg?.debug_allow_tab_scrape_fallback === true ||
       cfg?.debug_allow_tab_scrape_fallback === "true";
 
-      if (found.size < capNum && allowTabScrapeFallback) {
+      if (allowTabScrapeFallback) {
         log("live_check", "Trying tab scrape fallback (debug-enabled)");
         const viaTab = filterConfigured(await htmlScrapeViaTab(), cfg);
         if (viaTab.length > 0) addFound(viaTab, "html_tab");
         else log("live_check", "Tab scrape method returned no configured results");
-      } else if (found.size < capNum) {
+      } else {
         log("live_check", "Skipping tab scrape fallback (disabled for normal polling)");
       }
 
       const result = [...found];
+      lastDetectionMeta = {
+        healthy: healthySources.length > 0 || currentProbeHealth.responded > 0,
+        sources: [...new Set(healthySources)],
+        at: Date.now(),
+        probe: {
+          ...currentProbeHealth,
+          live: uniq(currentProbeHealth.live),
+          offline: uniq(currentProbeHealth.offline),
+          unknown: uniq(currentProbeHealth.unknown)
+        },
+        sidebar_age_ms: sidebarState.at ? Date.now() - sidebarState.at : null
+      };
       log("live_found", {
         count: result.length,
         channels: result,
-        configured
+        configured,
+        detection: lastDetectionMeta
       });
 
       return new Set(result);
     } catch (e) {
+      lastDetectionMeta = { healthy: false, sources: [], at: Date.now(), probe: { ...currentProbeHealth }, error: String(e) };
       log("live_error", String(e));
       return new Set();
     }
+  };
+
+  L.updateSidebarState = updateSidebarState;
+  L.getLastDetectionMeta = () => ({ ...lastDetectionMeta });
+  L.getSidebarState = () => {
+    rebuildSidebarAggregate();
+    return { ...sidebarState, live: sidebarState.live.slice(), streaks: sidebarState.streaks.slice() };
   };
 
   self.bgLive = L;

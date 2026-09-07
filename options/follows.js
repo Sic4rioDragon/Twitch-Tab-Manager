@@ -112,6 +112,14 @@ function bucketLabel(bucket) {
     .replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
+function bucketStatusEl() {
+  return $("#channelBucketsStatus") || $("#folStatus");
+}
+
+function rotationStatusEl() {
+  return $("#rotationSettingsStatus") || $("#folStatus");
+}
+
 function showBucketConflict(statusEl, validation) {
   err(
     statusEl,
@@ -139,7 +147,7 @@ function ensureAdvancedBucketsUI() {
 
       <div class="card">
         <h4>Rotation</h4>
-        <p class="small">Rotation channels use dedicated rotation slots. They do not take over your stable favorites / priority slots.</p>
+        <p class="small">Rotation channels use extra dedicated slots above the normal Max Tabs pool. If a rotation slot is unused, a normal stream may borrow it until rotation needs it.</p>
         <textarea id="rotationBox" class="miniTA" placeholder="one username per line"></textarea>
       </div>
 
@@ -165,7 +173,7 @@ function ensureAdvancedBucketsUI() {
         </label>
 
         <label class="field" style="margin-top:10px;">
-          <span class="label-title">Dedicated rotation slots</span>
+          <span class="label-title">Extra rotation slots</span>
           <input id="rotationSlotCount" type="number" min="0" step="1" />
         </label>
 
@@ -381,7 +389,7 @@ export function setupFollowsPanel() {
       const bucketMap = buildBucketMapFromInputs(cfg, { favorites });
       const validation = validateExclusiveBuckets(bucketMap);
       if (!validation.ok) {
-        showBucketConflict($("#folStatus"), validation);
+        showBucketConflict(bucketStatusEl(), validation);
         return;
       }
 
@@ -393,9 +401,9 @@ export function setupFollowsPanel() {
 
       $("#favoritesBox").value = clean.favorites.join("\n");
       if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
-      ok($("#folStatus"), "Favorites saved.");
+      ok(bucketStatusEl(), "Favorites saved.");
     } catch (e) {
-      err($("#folStatus"), `Favorites save failed: ${e.message || e}`);
+      err(bucketStatusEl(), `Favorites save failed: ${e.message || e}`);
     }
   });
 
@@ -408,7 +416,7 @@ export function setupFollowsPanel() {
       const bucketMap = buildBucketMapFromInputs(cfg, { rotation });
       const validation = validateExclusiveBuckets(bucketMap);
       if (!validation.ok) {
-        showBucketConflict($("#folStatus"), validation);
+        showBucketConflict(bucketStatusEl(), validation);
         return;
       }
 
@@ -420,9 +428,9 @@ export function setupFollowsPanel() {
 
       $("#rotationBox").value = clean.rotation.join("\n");
       if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
-      ok($("#folStatus"), "Rotation channels saved.");
+      ok(bucketStatusEl(), "Rotation channels saved.");
     } catch (e) {
-      err($("#folStatus"), `Rotation save failed: ${e.message || e}`);
+      err(bucketStatusEl(), `Rotation save failed: ${e.message || e}`);
     }
   });
 
@@ -435,7 +443,7 @@ export function setupFollowsPanel() {
       const bucketMap = buildBucketMapFromInputs(cfg, { low_priority });
       const validation = validateExclusiveBuckets(bucketMap);
       if (!validation.ok) {
-        showBucketConflict($("#folStatus"), validation);
+        showBucketConflict(bucketStatusEl(), validation);
         return;
       }
 
@@ -447,9 +455,9 @@ export function setupFollowsPanel() {
 
       $("#lowPriorityBox").value = clean.low_priority.join("\n");
       if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
-      ok($("#folStatus"), "Low priority channels saved.");
+      ok(bucketStatusEl(), "Low priority channels saved.");
     } catch (e) {
-      err($("#folStatus"), `Low priority save failed: ${e.message || e}`);
+      err(bucketStatusEl(), `Low priority save failed: ${e.message || e}`);
     }
   });
 
@@ -468,9 +476,9 @@ export function setupFollowsPanel() {
       }));
 
       if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
-      ok($("#folStatus"), "Rotation settings saved.");
+      ok(rotationStatusEl(), "Rotation settings saved.");
     } catch (e) {
-      err($("#folStatus"), `Rotation settings save failed: ${e.message || e}`);
+      err(rotationStatusEl(), `Rotation settings save failed: ${e.message || e}`);
     }
   };
 
@@ -491,7 +499,7 @@ export function setupPriorityEditor() {
       const bucketMap = buildBucketMapFromInputs(cfg, { priority });
       const validation = validateExclusiveBuckets(bucketMap);
       if (!validation.ok) {
-        showBucketConflict($("#folStatus"), validation);
+        showBucketConflict(bucketStatusEl(), validation);
         return;
       }
 
@@ -504,9 +512,9 @@ export function setupPriorityEditor() {
       if ($("#priorityBox")) $("#priorityBox").value = clean.priority.join("\n");
       if ($("#cfg")) $("#cfg").value = JSON.stringify(clean, null, 2);
 
-      ok($("#folStatus"), "Priority saved.");
+      ok(bucketStatusEl(), "Priority saved.");
     } catch (e) {
-      err($("#folStatus"), `Priority save failed: ${e.message || e}`);
+      err(bucketStatusEl(), `Priority save failed: ${e.message || e}`);
     }
   });
 }

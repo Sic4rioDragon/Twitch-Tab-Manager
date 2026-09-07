@@ -12,7 +12,7 @@
   function hasOfflineText(node) {
     if (!node) return false;
     const text = (node.textContent || "").trim().toLowerCase();
-    return /\boffline\b/.test(text);
+    return /(?:\boffline\b|\blast live\b|check out this .{0,120} stream)/i.test(text);
   }
 
   function isOfflineNow() {
@@ -24,7 +24,9 @@
       '[data-a-target="channel-status-text"]',
       '[data-test-selector="channel-status-text"]',
       '[data-a-target="player-overlay-offline-channel-text"]',
-      '[data-test-selector="player-overlay-offline-channel-text"]'
+      '[data-test-selector="player-overlay-offline-channel-text"]',
+      '[data-a-target="offline-channel-main-content"]',
+      '[data-test-selector="offline-channel-main-content"]'
     ];
 
     for (const selector of selectors) {

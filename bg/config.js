@@ -70,7 +70,13 @@ function clampSettings(raw) {
   cfg.rotation_include_low_priority = parseBool(cfg.rotation_include_low_priority, false);
 
   cfg.streak_rescue_enabled = parseBool(cfg.streak_rescue_enabled, false);
-  cfg.streak_rescue_mode = String(cfg.streak_rescue_mode || "detect").toLowerCase() === "auto" ? "auto" : "detect";
+  cfg.streak_rescue_detect_only_explicit = parseBool(cfg.streak_rescue_detect_only_explicit, false);
+  cfg.streak_rescue_mode = String(cfg.streak_rescue_mode || "auto").toLowerCase() === "detect" ? "detect" : "auto";
+  if (cfg.streak_rescue_enabled && cfg.streak_rescue_mode === "detect" && !cfg.streak_rescue_detect_only_explicit) {
+    log("streak_rescue_mode_migrated_to_auto", { reason: "legacy_implicit_detect_only" });
+    cfg.streak_rescue_mode = "auto";
+  }
+  if (cfg.streak_rescue_mode === "auto") cfg.streak_rescue_detect_only_explicit = false;
   cfg.streak_rescue_slots = 1;
   cfg.streak_rescue_required_watch_min = Math.max(5, Number(cfg.streak_rescue_required_watch_min || 5) || 5);
   cfg.streak_rescue_grace_min = Math.max(0, Number(cfg.streak_rescue_grace_min ?? 10) || 0);
@@ -79,10 +85,12 @@ function clampSettings(raw) {
 
   const conflicts = validateExclusiveBuckets(cfg);
   if (conflicts.length > 0) {
-    log("config_bucket_conflicts", { conflicts });
+    log("config_bucket_conflicts_resolved", { conflicts });
   }
+  resolveExclusiveBuckets(cfg);
 
   cfg.followUnion = buildFollowUnion(cfg);
+  cfg.temp_whitelist_entries = pruneTempWhitelistEntries(cfg);
 
   return cfg;
 }
@@ -155,6 +163,7 @@ function buildLegacyFlatConfig(bag = {}) {
     rotation_include_low_priority: bag.rotation_include_low_priority,
     streak_rescue_enabled: bag.streak_rescue_enabled,
     streak_rescue_mode: bag.streak_rescue_mode,
+    streak_rescue_detect_only_explicit: bag.streak_rescue_detect_only_explicit,
     streak_rescue_slots: bag.streak_rescue_slots,
     streak_rescue_required_watch_min: bag.streak_rescue_required_watch_min,
     streak_rescue_grace_min: bag.streak_rescue_grace_min,
@@ -172,13 +181,10 @@ function hasMeaningfulBrowserConfig(bag = {}) {
 
   const legacy = buildLegacyFlatConfig(bag);
 
-  const listHasData =
-    (Array.isArray(nested.follows) && nested.follows.length > 0) ||
-    (Array.isArray(nested.priority) && nested.priority.length > 0) ||
-    (Array.isArray(nested.blacklist) && nested.blacklist.length > 0) ||
-    (Array.isArray(legacy.follows) && legacy.follows.length > 0) ||
-    (Array.isArray(legacy.priority) && legacy.priority.length > 0) ||
-    (Array.isArray(legacy.blacklist) && legacy.blacklist.length > 0);
+  const listHasData = [
+    nested.favorites, nested.priority, nested.follows, nested.rotation, nested.low_priority, nested.blacklist,
+    legacy.favorites, legacy.priority, legacy.follows, legacy.rotation, legacy.low_priority, legacy.blacklist
+  ].some((v) => Array.isArray(v) && v.length > 0);
 
   const scalarHasData = [
     nested.client_id,
@@ -190,13 +196,7 @@ function hasMeaningfulBrowserConfig(bag = {}) {
     legacy.access_token,
     legacy.live_source,
     legacy.check_interval_sec,
-    legacy.max_tabs,
-    nested.favorites,
-    nested.rotation,
-    nested.low_priority,
-    legacy.favorites,
-    legacy.rotation,
-    legacy.low_priority
+    legacy.max_tabs
   ].some((v) => v !== undefined && v !== null && String(v) !== "");
 
   return listHasData || scalarHasData;
@@ -315,6 +315,23 @@ function validateExclusiveBuckets(cfg) {
   return conflicts;
 }
 
+function resolveExclusiveBuckets(cfg) {
+  // Follows is the base Twitch-follow list and may overlap with one special
+  // classification. Blacklist always wins; then Favorite > Priority > Rotation
+  // > Low Priority. This also repairs older configs that accumulated overlaps.
+  const taken = new Set();
+  for (const bucket of ["blacklist", "favorites", "priority", "rotation", "low_priority"]) {
+    const next = [];
+    for (const ch of normalizeBucketList(cfg?.[bucket])) {
+      if (taken.has(ch)) continue;
+      taken.add(ch);
+      next.push(ch);
+    }
+    cfg[bucket] = next;
+  }
+  return cfg;
+}
+
 function buildFollowUnion(cfg) {
   return uniqNames([
     ...(cfg.favorites || []),
@@ -323,6 +340,98 @@ function buildFollowUnion(cfg) {
     ...(cfg.rotation || []),
     ...(cfg.low_priority || [])
   ]);
+}
+
+function getConfiguredNameSet(cfg) {
+  return new Set(uniqNames([
+    ...(cfg.favorites || []),
+    ...(cfg.priority || []),
+    ...(cfg.follows || []),
+    ...(cfg.rotation || []),
+    ...(cfg.low_priority || []),
+    ...(cfg.blacklist || [])
+  ]));
+}
+
+function pruneTempWhitelistEntries(cfg) {
+  const entries = cfg?.temp_whitelist_entries && typeof cfg.temp_whitelist_entries === "object"
+    ? cfg.temp_whitelist_entries
+    : {};
+  const configured = getConfiguredNameSet(cfg || {});
+  const now = Date.now();
+  const out = {};
+  const removed = [];
+
+  for (const [raw, rawExpiry] of Object.entries(entries)) {
+    const login = normalizeName(raw);
+    const expiry = Number(rawExpiry || 0);
+    let reason = "";
+    if (!login) reason = "invalid";
+    else if (!Number.isFinite(expiry) || expiry <= now) reason = "expired";
+    else if (configured.has(login)) reason = "now_configured";
+
+    if (reason) removed.push({ login: login || raw, reason });
+    else out[login] = expiry;
+  }
+
+  if (removed.length) log("temp_whitelist_pruned", { removed });
+  return out;
+}
+
+async function writeConfigMirrorsVerified(cfg) {
+  const clean = clampSettings(cfg);
+  const payload = {
+    settings: clean,
+    config: clean,
+    ttm_settings_v1: clean,
+    enabled: clean.enabled,
+    live_source: clean.live_source,
+    client_id: clean.client_id,
+    access_token: clean.access_token,
+    force_unmute: clean.force_unmute,
+    unmute_streams: clean.unmute_streams,
+    force_resume: clean.force_resume,
+    autoplay_streams: clean.autoplay_streams,
+    soft_wake_tabs: clean.soft_wake_tabs,
+    soft_wake_only_when_browser_focused: clean.soft_wake_only_when_browser_focused,
+    close_unfollowed_tabs: clean.close_unfollowed_tabs,
+    allow_extra_twitch_tabs: clean.allow_extra_twitch_tabs,
+    temp_whitelist_hours: clean.temp_whitelist_hours,
+    temp_whitelist_entries: clean.temp_whitelist_entries,
+    check_interval_sec: clean.check_interval_sec,
+    max_tabs: clean.max_tabs,
+    follows: clean.follows,
+    priority: clean.priority,
+    followUnion: clean.followUnion,
+    blacklist: clean.blacklist,
+    favorites: clean.favorites,
+    rotation: clean.rotation,
+    low_priority: clean.low_priority,
+    rotation_enabled: clean.rotation_enabled,
+    rotation_interval_min: clean.rotation_interval_min,
+    rotation_slot_count: clean.rotation_slot_count,
+    rotation_cooldown_min: clean.rotation_cooldown_min,
+    rotation_include_low_priority: clean.rotation_include_low_priority,
+    streak_rescue_enabled: clean.streak_rescue_enabled,
+    streak_rescue_mode: clean.streak_rescue_mode,
+    streak_rescue_detect_only_explicit: clean.streak_rescue_detect_only_explicit,
+    streak_rescue_slots: clean.streak_rescue_slots,
+    streak_rescue_required_watch_min: clean.streak_rescue_required_watch_min,
+    streak_rescue_grace_min: clean.streak_rescue_grace_min,
+    streak_rescue_confirm_check_sec: clean.streak_rescue_confirm_check_sec,
+    streak_rescue_retry_min: clean.streak_rescue_retry_min,
+    follows_count: clean.follows.length,
+    priority_count: clean.priority.length,
+    followUnion_count: clean.followUnion.length
+  };
+
+  await chrome.storage.local.set(payload);
+  const verify = await chrome.storage.local.get("ttm_settings_v1");
+  const written = clampSettings(verify.ttm_settings_v1 || {});
+  if (stableStringify(written) !== stableStringify(clean)) {
+    throw new Error("config_write_verification_failed");
+  }
+  return clean;
 }
 
 async function backupCurrentBrowserConfig(reason = "background_load_seen") {
@@ -335,65 +444,45 @@ async function backupCurrentBrowserConfig(reason = "background_load_seen") {
 
 async function loadSettings() {
   const bag = await chrome.storage.local.get(null);
-
   const hadMeaningfulBrowserConfig = hasMeaningfulBrowserConfig(bag);
-  const merged = buildMergedBrowserConfig(bag);
+  let merged = null;
+  let recoveredFromBackup = false;
 
-  state.settings = { ...state.settings, ...merged };
+  if (hadMeaningfulBrowserConfig) {
+    merged = buildMergedBrowserConfig(bag);
+  } else {
+    const history = Array.isArray(bag[BACKUP_HISTORY_KEY]) ? bag[BACKUP_HISTORY_KEY] : [];
+    const candidate = bag[BACKUP_LAST_KEY] || history[history.length - 1] || null;
+    if (candidate?.settings && hasMeaningfulBrowserConfig({ ttm_settings_v1: candidate.settings })) {
+      merged = clampSettings(candidate.settings);
+      recoveredFromBackup = true;
+      log("config_recovered_from_backup", { saved_at: candidate.saved_at || null, reason: candidate.reason || "backup" });
+    } else {
+      merged = clampSettings(state.settings);
+      log("config_load_found_no_meaningful_browser_config", {});
+    }
+  }
+
+  state.settings = clampSettings({ ...state.settings, ...merged });
 
   if (hadMeaningfulBrowserConfig) {
     await pushBackupSnapshot(buildSnapshot(state.settings, "background_load_seen"));
+  }
 
-    await saveSettings(state.settings);
-    await chrome.storage.local.set({
-      settings: state.settings,
-      config: state.settings,
-      ttm_settings_v1: state.settings,
-      enabled: state.settings.enabled,
-      live_source: state.settings.live_source,
-      client_id: state.settings.client_id,
-      access_token: state.settings.access_token,
-      force_unmute: state.settings.force_unmute,
-      unmute_streams: state.settings.unmute_streams,
-      force_resume: state.settings.force_resume,
-      autoplay_streams: state.settings.autoplay_streams,
-      soft_wake_tabs: state.settings.soft_wake_tabs,
-      soft_wake_only_when_browser_focused: state.settings.soft_wake_only_when_browser_focused,
-      close_unfollowed_tabs: state.settings.close_unfollowed_tabs,
-      allow_extra_twitch_tabs: state.settings.allow_extra_twitch_tabs,
-      temp_whitelist_hours: state.settings.temp_whitelist_hours,
-      temp_whitelist_entries: state.settings.temp_whitelist_entries,
-      check_interval_sec: state.settings.check_interval_sec,
-      max_tabs: state.settings.max_tabs,
-      follows: state.settings.follows,
-      priority: state.settings.priority,
-      followUnion: state.settings.followUnion,
-      blacklist: state.settings.blacklist,
-      follows_count: state.settings.follows.length,
-      priority_count: state.settings.priority.length,
-      followUnion_count: state.settings.followUnion.length,
-      favorites: state.settings.favorites,
-      rotation: state.settings.rotation,
-      low_priority: state.settings.low_priority,
-      rotation_enabled: state.settings.rotation_enabled,
-      rotation_interval_min: state.settings.rotation_interval_min,
-      rotation_slot_count: state.settings.rotation_slot_count,
-      rotation_cooldown_min: state.settings.rotation_cooldown_min,
-      rotation_include_low_priority: state.settings.rotation_include_low_priority,
-      streak_rescue_enabled: state.settings.streak_rescue_enabled,
-      streak_rescue_mode: state.settings.streak_rescue_mode,
-      streak_rescue_slots: state.settings.streak_rescue_slots,
-      streak_rescue_required_watch_min: state.settings.streak_rescue_required_watch_min,
-      streak_rescue_grace_min: state.settings.streak_rescue_grace_min,
-      streak_rescue_confirm_check_sec: state.settings.streak_rescue_confirm_check_sec,
-      streak_rescue_retry_min: state.settings.streak_rescue_retry_min,
-    });
-  } else {
-    log("config_load_found_no_meaningful_browser_config", {});
+  // Always mirror the validated/pruned configuration. This is especially
+  // important for expiring temporary whitelist entries and backup recovery.
+  if (hadMeaningfulBrowserConfig || recoveredFromBackup) {
+    try {
+      state.settings = await writeConfigMirrorsVerified(state.settings);
+      await saveSettings(state.settings);
+    } catch (e) {
+      log("config_mirror_write_error", { error: String(e) });
+    }
   }
 
   log("config_loaded", {
     hadMeaningfulBrowserConfig,
+    recoveredFromBackup,
     settings: redactForDiag(state.settings)
   });
 
@@ -432,7 +521,7 @@ async function maybeShowUpdateNotification(details) {
       type: "basic",
       iconUrl: "icons/icon192.png",
       title: "Twitch Tab Manager updated",
-      message: `Extension got updated to ${version}. Click the extension icon to review what changed.`
+      message: `Extension got updated to ${version}. Open Options → Features to review the current feature set and recent updates.`
     });
 
     await chrome.storage.local.set({
@@ -455,6 +544,8 @@ T.recordPollMeta = recordPollMeta;
 T.getVersionText = getVersionText;
 T.maybeShowUpdateNotification = maybeShowUpdateNotification;
 T.backupCurrentBrowserConfig = backupCurrentBrowserConfig;
+T.pruneTempWhitelistEntries = pruneTempWhitelistEntries;
+T.writeConfigMirrorsVerified = writeConfigMirrorsVerified;
 
 export {
   parseBool,
@@ -466,5 +557,7 @@ export {
   recordPollMeta,
   getVersionText,
   maybeShowUpdateNotification,
-  backupCurrentBrowserConfig
+  backupCurrentBrowserConfig,
+  pruneTempWhitelistEntries,
+  writeConfigMirrorsVerified
 };

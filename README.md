@@ -34,9 +34,10 @@ Main goal: help manage Twitch tabs automatically without messing with tabs you o
 - **Helix-first** live detection when `client_id` + `access_token` are configured
 - HTML fallback/live probing for setups that do not use Helix
 - Per-channel **de-duplication**
-- Keeps Twitch tabs together in the same browser window where possible
-- Respects a strict **max tab cap** (`max_tabs`)
-- Background **re-pokes** managed Twitch tabs to help resume playback/unmute when Twitch stalls hidden tabs
+- Keeps automatic TTM stream tabs in a dedicated, normally-unfocused playback window
+- Respects the normal **max tab pool** (`max_tabs`), with optional extra dedicated rotation slots
+- Dedicated **Phase D rotation slots** that reuse managed tabs instead of opening a fresh tab every interval
+- Non-destructive background recovery using play retries and background-only maintenance without automatic tab/window activation
 - Popup controls for:
   - **On / Off**
   - **Force Poll**
@@ -202,7 +203,9 @@ curl -X POST "https://id.twitch.tv/oauth2/token" \
 
 The background worker checks who is live, compares that against already open Twitch tabs, and then opens or closes its own managed tabs as needed.
 
-To help with Twitch being Twitch, managed tabs can also get a few extra nudges after opening to help playback resume or stay active.
+To help with Twitch being Twitch, managed tabs use a dedicated playback window. Recovery is intentionally non-destructive: play retries, temporary visibility pulses, and background-only reinjection/pokes. Normal managed streams are not automatically reloaded or renavigated.
+
+TTM preserves the browser tab mute/unmute state instead of forcing managed tabs muted or unmuted.
 
 It should only auto-close tabs that the extension opened itself.
 
@@ -329,6 +332,143 @@ Full privacy policy:
 ---
 
 ## Changelog
+### [1.0.14.9] — hard focus-off + extra rotation capacity
+
+- Removes the startup focus-restore guard entirely: TTM never calls `chrome.windows.update(...focused...)` to focus or defocus any window.
+- Manager-window focus events are observation-only, preventing repeated focus ping-pong after you click back into ChatGPT, SpicyChat, or a game.
+- Keeps automatic stream initialization background-only and never activates `manager.html` or a Twitch tab as a recovery primitive.
+- Adds a short startup quiet period before creating the dedicated playback window to reduce launch-time Chromium focus races.
+- Changes `max_tabs` into the normal/stable stream pool while `rotation_slot_count` is extra capacity above it.
+- A full normal pool no longer blocks live rotation channels; e.g. 4 normal tabs + 2 rotation slots can use up to 6 TTM-owned tabs.
+- Unused rotation capacity may temporarily be borrowed by normal streams and is yielded when rotation needs the slot.
+- Preserves the existing no-browser-mute-mutation policy and the offline/orphan cleanup fixes.
+
+### [1.0.14.7] — transient tab-edit lock retry
+
+- Retries background tab creation when Brave temporarily reports `Tabs cannot be edited right now` instead of immediately failing the planned stream open.
+- Uses short increasing retry delays only for Chromium's transient tab-edit lock; genuine tab errors still fail normally.
+- Applies the same retry protection when recreating the dedicated TTM window's `manager.html` holder tab.
+- Keeps retries background-only: no tab activation, window focus, or browser mute-state changes are introduced.
+- Prevents short tab-strip locks from creating repeated `ensure_open_error` / `plan_open_error` entries for otherwise valid live channels.
+
+### [1.0.14.6] — orphan offline cleanup + focus-safe playback
+
+- Closes unmanaged/orphan Twitch tabs that are stranded inside the dedicated TTM playback window after they are positively detected offline for 90 seconds.
+- Fixes cases like a formerly managed stream staying open for hours because its ownership record disappeared while the tab remained in the TTM window.
+- Removes background `active:true` priming/holder switching so recovery no longer intentionally selects a hidden TTM tab as a playback primitive.
+- Preserves browser tab mute/unmute state across managed open, restore, rotation, watchdog recovery, and streak-rescue paths instead of forcing browser mute.
+- Keeps normal user-window Twitch tabs protected; orphan-offline cleanup only applies inside the dedicated TTM playback window.
+
+### [1.0.14.5] — startup focus guard
+
+- Reverts the v1.0.14.4 minimized-then-restore startup experiment and creates the dedicated playback window normally again with `focused:false`.
+- Captures the currently focused normal Brave window before TTM creates or primes anything, then immediately restores it if Brave surfaces the TTM window anyway.
+- Adds a short focus guard around startup creation and manager-tab priming, including early follow-up checks for asynchronous Chromium focus events.
+- Keeps `manager.html` as the resting internal tab while the dedicated playback window stays unfocused.
+- If no Brave window was focused before the operation, TTM does not force a normal Brave window foreground; it only asks the manager window itself to drop focus.
+- Adds focus-guard diagnostics including restore count, last restore target/reason, and whether a Brave window was actually focused before the guarded operation.
+- Leaves Phase D rotation, v1.0.14.2 player-mute / raid cleanup, and v1.0.14.3 temporary priming-backoff behavior unchanged.
+
+### [1.0.14.4] — Startup focus experiment
+
+- Creates the dedicated TTM playback window minimized first instead of creating a normal window immediately.
+- Restores the playback window to normal after a short delay with `focused:false`, while keeping `manager.html` as the startup anchor tab.
+- Managed stream tabs can begin populating the minimized playback window before the restore step.
+- Playback priming waits for the startup restore to finish instead of priming while the playback window is minimized.
+- Adds separate startup-focus diagnostics for the create step and restore step so Brave focus stealing can be isolated precisely.
+- Does not aggressively refocus the user's normal Brave window if the browser surfaces the playback window.
+- Leaves the v1.0.14.2 player-mute / raid cleanup fixes and v1.0.14.3 temporary priming-backoff behavior unchanged.
+
+### [1.0.14.3] — reliability Part B: focus + priming
+- Brief dedicated-window creation focus flashes are treated as transient instead of permanently disabling stream priming.
+- A genuine manager-window focus breach now pauses priming for about 30 seconds, then recovery can try again automatically.
+- After a queued prime batch goes idle, the dedicated playback window settles back onto `manager.html` once instead of leaving a stream internally selected.
+- Popup and Diagnose now report temporary priming backoff/focus-breach state rather than implying priming is disabled for the whole browser session.
+- Diagnose separately reports orphan raid tabs that are specifically inside the dedicated TTM playback window.
+- Phase D rotation hierarchy/timing and the v1.0.14.2 player-mute/raid-cleanup behavior are unchanged.
+
+### [1.0.14.2] — reliability Part A: player mute + raid cleanup
+- Separated browser-tab muting from Twitch's own player mute state; TTM-owned tabs remain browser-muted without repeatedly muting the Twitch player.
+- Changed startup autoplay fallback so the Twitch player is only muted briefly if an ordinary play attempt is rejected, then its prior state is restored immediately.
+- Preserves a manual Twitch-player unmute instead of re-muting a replacement video element during the same channel session.
+- Automatically removes unmanaged `?referrer=raid` orphan tabs inside the dedicated TTM playback window while leaving user-window Twitch tabs protected.
+- Returns the dedicated playback window to `manager.html` before removing an internally-active orphan raid so another random Twitch tab is not selected.
+- Phase D rotation hierarchy/timing and the existing focus/priming policy are unchanged in Part A.
+
+### [1.0.14.1] — Phase D rotation status + diagnostics (Part 2)
+- Added live Phase D rotation status to Copy Diagnose, including current slots, timers, cooldowns, candidates, and recent rotation history.
+- Added a popup Rotation card showing the active channel in each slot and the time remaining until the next switch.
+- Added an Options Rotation Status panel with current slots, eligible channels, cooldown countdowns, and recent switches.
+- Rotation history is kept for the current browser session so recent slot changes are easy to inspect.
+- Added current rotation-health counts to Diagnose and fixed lifecycle totals being counted twice in the health summary.
+- No changes to the Phase D Part 1 scheduling hierarchy, dedicated playback-window behavior, or focus/recovery architecture.
+
+### [1.0.14.0] — Phase D rotation core (Part 1)
+- Added reusable dedicated rotation slots inside the TTM playback window.
+- Rotation now follows the configured interval and cooldown instead of behaving like a static hierarchy bucket.
+- Favorites and Priority channels can temporarily reclaim rotation capacity when needed.
+- Normal followed channels keep stable capacity ahead of rotation; Low Priority can optionally participate in rotation.
+- Rotation reuses the same owned Twitch tab when switching channels instead of closing and reopening a new tab each interval.
+- If no alternate live candidate is eligible, the current rotation stream stays in place.
+- Live Watch Streak protection temporarily pins the current rotation stream so it is not rotated out while Twitch is still counting it.
+- Phase D remains under the strict TTM-owned `max_tabs` cap and stays inside the dedicated muted playback window.
+
+### [1.0.13.4] — dedicated-window diagnostics (Part 2 / polish)
+
+* Adds dedicated playback-window state to Copy Diagnose: window ID, focus state, priming state, internal-active tab count, and managed tabs inside/outside the manager window.
+* Marks an active tab inside an unfocused manager window as an internal manager selection instead of treating it like a user-active tab.
+* Adds attention flags for a focused manager window, priming disabled after a focus breach, or managed tabs found outside the dedicated window.
+* Adds a popup Playback Window line and a clear Managed Audio: muted indicator.
+* Clarifies in Options that Force Unmute / Unmute Streams do not unmute TTM-owned background streams in dedicated-window mode.
+* Documentation-only/diagnostic layer: no Phase C hierarchy, live-detection, raid, or watchdog behavior changes from v1.0.13.3 Part 1.
+
+### [1.0.13.3] — dedicated playback window (Part 1 / core)
+
+* Moves TTM-owned automatic stream tabs into a dedicated unfocused playback window.
+* Keeps automatic managed streams browser-muted, regardless of Force Unmute / Unmute Streams.
+* Removes destructive watchdog reload/renavigation recovery for normal managed streams.
+* Recovery is play/reinject → temporary visibility pulse → short internal manager-window prime → retry later.
+* Intentional tab activation is confined to the dedicated unfocused manager window.
+* Managed tabs moved into a normal user window are released from TTM ownership.
+* Streak Rescue uses the dedicated playback window and non-destructive priming.
+
+### [1.0.13.2] — reliability polish + diagnostics
+
+* Resumes background player control shortly after the user leaves a managed Twitch tab, without activating or focusing anything.
+* Adds a compact health summary to Copy Diagnose: managed/external tabs, raid leftovers, lifecycle counts, recovery state, and live-detector counts.
+* Adds an attention list for orphan raids, failed/recovering managed tabs, rendered-offline tabs, and recovery-cap hits.
+* Adds a small Health line to the popup for quick visibility into playing/recovering/raid-cleanup state.
+* Removes per-channel probe log spam; each poll now records one compact probe summary instead.
+* Keeps all v1.0.13.1 raid/offline/recovery/focus protections unchanged.
+
+### [1.0.12] — recovery safety + Phase C hierarchy
+
+* Prevent automatic recovery from controlling or adopting Twitch tabs opened by the user
+* Protect the currently active Twitch tab from destructive reload, renavigation, and automatic closing
+* Consolidate normal stream recovery under one watchdog instead of competing recovery systems
+* Prefer in-page background recovery before any browser-level reload
+* Add a short activation guard that restores the previously selected tab if Brave unexpectedly activates a managed recovery tab
+* Make polling/reconcile single-flight to prevent overlapping polls from temporarily exceeding the managed tab cap
+* Add deterministic Phase C hierarchy: Favorites → Priority → Follows → Rotation → Low Priority, with Blacklist always blocking
+* Keep user-open Twitch tabs outside the managed cap while allowing them to satisfy the same channel without creating a duplicate
+* Improve diagnostics with ownership, active-tab protection, recovery owner, and desired-state events
+* Fix stale temporary-whitelist cleanup when channels become configured elsewhere
+* Keep Watch Streak markers as temporary maintenance boosts without outranking Favorites or Priority
+
+### [1.0.11] — background reliability rebuild
+
+* Rebuilt automatic tab opening around a strict no-focus background policy
+* Added managed-tab lifecycle registry and playback-progress watchdog
+* Automatic recovery now reinjects, reloads, and renavigates stuck Twitch tabs without activating them
+* Added automatic stuck-state snapshots and structured event history for diagnostics
+* Treats failed live detection as unknown so existing managed tabs are preserved
+* Live discovery is no longer capped by max tabs before priority/hierarchy planning
+* Muted-but-playing background video now counts as healthy playback instead of causing reload loops
+* Temporary whitelist entries now self-prune when expired or when a channel becomes configured elsewhere
+* Added generic Watch Streak N sidebar observation, including double-digit streaks
+* Keeps compatibility with other Twitch extensions by verifying actual video progress rather than page focus/visibility alone
+
+
 
 All notable changes use `DD/MM/YYYY`.
 
@@ -517,3 +657,53 @@ All notable changes use `DD/MM/YYYY`.
 * Volume memory
 * Channel points helper / notifier
 * Better ad-aware behavior
+
+## v1.0.13.1 — Core stability test (Part 1)
+
+This is the first half of the v1.0.13 reliability fix. It intentionally focuses on the heavy runtime changes before the remaining polish/tuning is layered on top.
+
+- Preserve TTM ownership through Twitch raids and close inactive owned raid redirects safely.
+- One-time cleanup for the v1.0.12 orphan `?referrer=raid` tab leak.
+- Never adopt user-open Twitch tabs.
+- Active managed tabs are observation-only; automatic code never activates a tab or focuses a window.
+- Conservative watchdog with capped destructive recovery and long retry cooldowns.
+- Reset recovery counters after verified playback progress.
+- Muted-first hidden playback startup, followed by normal preference restoration after progress.
+- Stagger newly-created Twitch tabs to reduce simultaneous player initialization stalls.
+- Use rendered offline state as positive evidence instead of preserving stale tabs forever on probe UNKNOWN.
+- Aggregate sidebar reports and ignore raid pages as discovery sources.
+
+Part 2 is packaged separately as v1.0.13.2 so the core runtime changes and the diagnostic/polish layer can be tested independently.
+
+
+## v1.0.13.2 — Reliability polish (Part 2)
+
+This second half intentionally avoids changing the Phase C hierarchy or the new heavy recovery/raid rules from v1.0.13.1. It adds lower-risk observability and lifecycle polish on top:
+
+- Resume background helper control after the user leaves a managed Twitch tab, with no tab activation or window focus.
+- Compact Diagnose health/attention summaries for raids, recovery, offline state, and detector health.
+- Popup Health line for quick playing/recovering/failure visibility.
+- Compact probe logging to keep useful recovery and raid events from being pushed out of the diagnostic log window.
+
+Phase D rotation remains intentionally out of scope until the v1.0.13 reliability series is confirmed stable.
+
+
+## v1.0.13.4 — Dedicated playback window diagnostics (Part 2)
+
+This second half intentionally leaves the v1.0.13.3 dedicated-window runtime behavior alone. It makes the new architecture visible enough to debug without guessing:
+
+- Copy Diagnose reports whether the playback window exists, whether it is actually focused, whether priming was disabled after a focus breach, and how many managed tabs are inside/outside it.
+- Managed tab records report `windowId`, `in_manager_window`, and `internal_manager_active`.
+- The popup shows the playback-window state and the current browser-tab mute policy.
+- Options explains which old playback/soft-wake settings are now compatibility-only for TTM-owned background tabs.
+
+Phase D rotation remains out of scope until the dedicated-window approach passes the focus/playback test.
+
+## v1.0.14.8 — Brave tab-edit lock follow-up
+
+- Apply the transient Brave/Chromium `Tabs cannot be edited right now` retry wrapper to background policy updates, navigation, reload preparation, and tab closes too.
+- Treat an exhausted temporary background-policy lock as a soft skip so it can be retried later instead of creating a Chrome extension error.
+- Treat a tab disappearing during an async policy request as a normal close/rotation race.
+- Keep background policy non-destructive: no tab activation, no window focus, and no browser mute/unmute mutation.
+- Keep unexpected non-transient policy failures in diagnostics without promoting the optional policy step to a Chrome extension error.
+

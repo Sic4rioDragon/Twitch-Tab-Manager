@@ -2,24 +2,46 @@
   "manifest_version": 3,
   "name": "Twitch Tab Manager",
   "description": "Opens followed Twitch channels when live, avoids duplicates, and closes manager-opened tabs when streams end.",
-  "version": "1.0.10",
-  "action": { "default_popup": "popup.html", "default_title": "Twitch Tab Manager" },
+  "version": "1.0.14.12",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Twitch Tab Manager"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-  "web_accessible_resources": [{
-    "resources": [
-      "config.json",
-      "follows.txt",
-      "bg.stability.js",
-      "assets/*"
-    ],
-    "matches": ["*://*/*"]
-  }],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "config.json",
+        "follows.txt",
+        "bg/stability.js"
+      ],
+      "matches": [
+        "*://*/*"
+      ]
+    }
+  ],
   "options_page": "options.html",
-  "permissions": ["tabs","storage","alarms","scripting","downloads","cookies","notifications"],
-  "host_permissions": ["*://www.twitch.tv/*","*://twitch.tv/*","*://api.twitch.tv/*","*://id.twitch.tv/*"],
-
-  "icons": {  "16": "icons/icon16.png","32": "icons/icon32.png", "192": "icons/icon192.png" }
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "scripting",
+    "downloads",
+    "cookies",
+    "notifications"
+  ],
+  "host_permissions": [
+    "*://www.twitch.tv/*",
+    "*://twitch.tv/*",
+    "*://api.twitch.tv/*",
+    "*://id.twitch.tv/*"
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "192": "icons/icon192.png"
+  }
 }

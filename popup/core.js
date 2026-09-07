@@ -75,6 +75,20 @@ export function clampConfig(input = {}) {
     ...(cfg.low_priority || [])
   ]);
 
+  const configured = new Set(uniqNames([
+    ...(cfg.favorites || []), ...(cfg.priority || []), ...(cfg.follows || []),
+    ...(cfg.rotation || []), ...(cfg.low_priority || []), ...(cfg.blacklist || [])
+  ]));
+  const now = Date.now();
+  const prunedWhitelist = {};
+  for (const [raw, rawExpiry] of Object.entries(cfg.temp_whitelist_entries || {})) {
+    const login = normalizeName(raw);
+    const expiry = Number(rawExpiry || 0);
+    if (!login || !Number.isFinite(expiry) || expiry <= now || configured.has(login)) continue;
+    prunedWhitelist[login] = expiry;
+  }
+  cfg.temp_whitelist_entries = prunedWhitelist;
+
   return cfg;
 }
 
@@ -170,6 +184,14 @@ export async function readStorageFallback() {
   }
 }
 
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(",")}}`;
+}
+
 export async function backupCurrentBrowserConfig(reason = "popup_edit") {
   try {
     const bag = await chrome.storage.local.get(null);
@@ -206,7 +228,11 @@ export async function backupCurrentBrowserConfig(reason = "popup_edit") {
 export async function writeConfigEverywhere(cfg) {
   const clean = clampConfig(cfg);
 
-  await chrome.storage.local.set({
+  // Popup edits get the same safety as Options edits: snapshot first, write all
+  // mirrors, verify the canonical copy, then keep the new state as last-good.
+  await backupCurrentBrowserConfig("before_popup_edit");
+
+  const payload = {
     settings: clean,
     config: clean,
     ttm_settings_v1: clean,
@@ -228,28 +254,36 @@ export async function writeConfigEverywhere(cfg) {
     max_tabs: clean.max_tabs,
     follows: clean.follows,
     priority: clean.priority,
+    favorites: clean.favorites,
+    rotation: clean.rotation,
+    low_priority: clean.low_priority,
     followUnion: clean.followUnion,
     blacklist: clean.blacklist,
+    rotation_enabled: clean.rotation_enabled,
+    rotation_interval_min: clean.rotation_interval_min,
+    rotation_slot_count: clean.rotation_slot_count,
+    rotation_cooldown_min: clean.rotation_cooldown_min,
+    rotation_include_low_priority: clean.rotation_include_low_priority,
+    streak_rescue_enabled: clean.streak_rescue_enabled,
+    streak_rescue_mode: clean.streak_rescue_mode,
+    streak_rescue_slots: clean.streak_rescue_slots,
+    streak_rescue_required_watch_min: clean.streak_rescue_required_watch_min,
+    streak_rescue_grace_min: clean.streak_rescue_grace_min,
+    streak_rescue_confirm_check_sec: clean.streak_rescue_confirm_check_sec,
+    streak_rescue_retry_min: clean.streak_rescue_retry_min,
     follows_count: clean.follows.length,
     priority_count: clean.priority.length,
-    followUnion_count: clean.followUnion.length,
-    favorites: clean.favorites,
-  rotation: clean.rotation,
-  low_priority: clean.low_priority,
-  rotation_enabled: clean.rotation_enabled,
-  rotation_interval_min: clean.rotation_interval_min,
-  rotation_slot_count: clean.rotation_slot_count,
-  rotation_cooldown_min: clean.rotation_cooldown_min,
-  rotation_include_low_priority: clean.rotation_include_low_priority,
-  streak_rescue_enabled: clean.streak_rescue_enabled,
-  streak_rescue_mode: clean.streak_rescue_mode,
-  streak_rescue_slots: clean.streak_rescue_slots,
-  streak_rescue_required_watch_min: clean.streak_rescue_required_watch_min,
-  streak_rescue_grace_min: clean.streak_rescue_grace_min,
-  streak_rescue_confirm_check_sec: clean.streak_rescue_confirm_check_sec,
-  streak_rescue_retry_min: clean.streak_rescue_retry_min
-  });
+    followUnion_count: clean.followUnion.length
+  };
 
+  await chrome.storage.local.set(payload);
+  const verify = await chrome.storage.local.get("ttm_settings_v1");
+  const readBack = clampConfig(verify.ttm_settings_v1 || {});
+  if (stableStringify(readBack) !== stableStringify(clean)) {
+    throw new Error("Config write verification failed; the previous backup was preserved.");
+  }
+
+  await backupCurrentBrowserConfig("after_popup_edit");
   return clean;
 }
 

@@ -5,6 +5,9 @@ import { loadSettings } from "./config.js";
 import { fetchMyFollows } from "./follows.js";
 import { getPlayerStatus, rememberPlayerStatus, repokeManagedTabs, pokeChannelTab, scheduleTabRepokes } from "./player.js";
 import { poll, bootOnce } from "./poll.js";
+import { initRegistry, unregisterTab, notePageState, notePlayerState, noteRaid, getTabRecord } from "./registry.js";
+import { armWatchdog, runWatchdog, CHECK_ALARM } from "./watchdog.js";
+import { event } from "./events.js";
 import {
   handleStreakScan,
   handleStreakPlayback,
@@ -20,10 +23,19 @@ import {
   clearRaidTimer,
   scheduleOfflineClose,
   scheduleRaidClose,
+  scheduleOwnedRaidTabClose,
+  closeManagerWindowOrphanRaidTab,
+  cleanupManagerWindowOrphanRaidTabs,
   tempAllowChannel
 } from "./cleanup.js";
+import { getManagerWindowInfo, isManagerWindowUnfocused } from "./manager-window.js";
 
 const T = (globalThis.TTM = globalThis.TTM || {});
+
+// Track the previously selected tab per window so a managed Twitch tab that
+// was paused for user interaction can resume background control after the user
+// leaves it. This never activates a tab or focuses a window.
+const selectedTabByWindow = new Map();
 
 const ACCEPTED_TYPES = [
   "ttm/ping",
@@ -47,6 +59,9 @@ const ACCEPTED_TYPES = [
   "TTM_CLEAR_LOGS",
   "TTM_STREAK_SCAN",
   "TTM_STREAK_PLAYBACK",
+  "TTM_PAGE_STATE",
+  "TTM_SIDEBAR_STATE",
+  "TTM_RUNTIME_SNAPSHOT",
   "ttm/streak_status",
   "ttm/streak_tick",
   "channel_status",
@@ -60,14 +75,24 @@ chrome.runtime.onInstalled.addListener((details) => {
 
   globalThis.__TTM_BG_BOOTED__ = false;
   T.bootOnce()
-    .then(() => initStreakRescue())
+    .then(async () => {
+      await initRegistry();
+      await armWatchdog();
+      await initStreakRescue();
+      await runWatchdog();
+    })
     .catch((e) => T.log?.("boot_err", String(e)));
 });
 
 chrome.runtime.onStartup?.addListener(() => {
   globalThis.__TTM_BG_BOOTED__ = false;
   T.bootOnce()
-    .then(() => initStreakRescue())
+    .then(async () => {
+      await initRegistry();
+      await armWatchdog();
+      await initStreakRescue();
+      await runWatchdog();
+    })
     .catch((e) => T.log?.("boot_err", String(e)));
 });
 
@@ -79,37 +104,203 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     return;
   }
 
+  if (alarm?.name === CHECK_ALARM) {
+    runWatchdog().catch((e) => T.log?.("watchdog_error", String(e)));
+    return;
+  }
+
   if (alarm?.name === T.TTM_REPOKE_ALARM) {
     repokeManagedTabs().catch((e) => T.log?.("alarm_repoke_error", String(e)));
     runStreakRescueTick().catch((e) => T.log?.("streak_tick_error", String(e)));
   }
 });
 
-chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
-  if (info.status !== "complete") return;
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
   if (!isManagerEnabled()) return;
 
-  onTwitchTabComplete(tabId, tab?.url || tab?.pendingUrl || "").catch(() => {});
+  const url = tab?.url || tab?.pendingUrl || "";
+  const raidLike = /([?&])referrer=raid(?:&|$)/i.test(url);
 
-  if (!T.isChannelUrl?.(tab?.url)) return;
+  // Unmanaged raid redirects are still safe to remove when they live inside
+  // the dedicated TTM playback window. Do this as soon as the URL appears, not
+  // only after Twitch finishes loading the redirected page.
+  if (raidLike && !T.isManaged?.(tabId)) {
+    const managerInfo = await getManagerWindowInfo().catch(() => null);
+    if (managerInfo?.exists && Number(tab?.windowId) === Number(managerInfo.windowId)) {
+      const closed = await closeManagerWindowOrphanRaidTab(tabId, "runtime_url_raid_cleanup");
+      if (closed) return;
+    }
+  }
+
+  if (info?.discarded === true && T.isManaged?.(tabId)) {
+    setTimeout(() => {
+      T.ensureBackgroundTabLoaded?.(tabId, T.channelFromUrl?.(url) || "").catch?.(() => {});
+    }, 500);
+  }
+
+  if (info.status !== "complete") return;
+
+  // Streak discovery is observation-only and may run on any Twitch tab.
+  onTwitchTabComplete(tabId, url).catch(() => {});
+
+  // Everything below this line is manager control. Never apply it to a tab the
+  // user opened themselves.
+  if (!T.isManaged?.(tabId)) return;
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (managerInfo?.exists && Number(tab?.windowId) !== Number(managerInfo.windowId)) {
+    // A managed tab dragged/moved into a normal browser window becomes a user
+    // tab immediately. Do not keep controlling it outside the dedicated window.
+    await T.releaseOwnedTab?.(tabId, "managed_tab_left_manager_window");
+    await event("MANAGED_TAB_RELEASED_OUTSIDE_MANAGER_WINDOW", {
+      tabId,
+      windowId: tab?.windowId ?? null,
+      managerWindowId: managerInfo.windowId,
+      url
+    });
+    return;
+  }
+
+  // Raid bookkeeping is allowed while selected. In the dedicated *unfocused*
+  // manager window, an internally active tab is still background-manager space.
+  if (raidLike) {
+    const target = T.channelFromUrl?.(url) || "";
+    noteRaid(tabId, target).catch(() => {});
+    event("RAID_DETECTED", { tabId, target, url, owned: true }).catch(() => {});
+    scheduleOwnedRaidTabClose(tabId, 30000);
+  }
+
+  const internalManagerSelection = !!tab?.active && await isManagerWindowUnfocused(tab?.windowId);
+
+  // An active tab in a user-focused window is user territory. An active tab in
+  // the dedicated unfocused manager window is intentionally controllable.
+  if (tab?.active && !internalManagerSelection) {
+    chrome.tabs.sendMessage(tabId, { type: "TTM_ENFORCE_PAUSE" }).catch?.(() => {});
+    return;
+  }
+
+  T.makeTabBackgroundSafe?.(tabId).catch?.(() => {});
+  if (!T.isChannelUrl?.(url)) return;
   pokeChannelTab(tabId).catch(() => {});
   scheduleTabRepokes(tabId);
 });
 
-chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (T.isManaged?.(tabId) && T.releaseOwnedTab) {
+    T.releaseOwnedTab(tabId, "tab_removed").catch(() => {});
+  } else {
+    unregisterTab(tabId).catch(() => {});
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
   if (!isManagerEnabled()) return;
 
+  const priorTabId = selectedTabByWindow.get(Number(windowId));
+  selectedTabByWindow.set(Number(windowId), Number(tabId));
+
+  // If a managed tab just became inactive, it may resume background control.
+  if (priorTabId && priorTabId !== tabId && T.isManaged?.(priorTabId)) {
+    setTimeout(async () => {
+      try {
+        const prior = await chrome.tabs.get(priorTabId);
+        if (!prior?.active && T.isManaged?.(priorTabId)) {
+          await pokeChannelTab(priorTabId);
+          await event("MANAGED_TAB_CONTROL_RESUMED", { tabId: priorTabId, windowId });
+        }
+      } catch {}
+    }, 750);
+  }
+
+  if (!T.isManaged?.(tabId)) return;
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (managerInfo?.exists && Number(windowId) !== Number(managerInfo.windowId)) {
+    // Anything the user moves into a normal browser window stops being TTM-owned.
+    await T.releaseOwnedTab?.(tabId, "managed_tab_activated_outside_manager_window");
+    await event("MANAGED_TAB_RELEASED_OUTSIDE_MANAGER_WINDOW", {
+      tabId,
+      windowId,
+      managerWindowId: managerInfo.windowId,
+      reason: "activated_outside_manager_window"
+    });
+    return;
+  }
+
+  const internalManagerSelection = await isManagerWindowUnfocused(windowId);
+  if (internalManagerSelection) {
+    // This activation was inside the dedicated unfocused manager window (for
+    // example startup/recovery priming). It is safe and must not be paused.
+    await pokeChannelTab(tabId).catch(() => {});
+    await event("MANAGER_INTERNAL_TAB_ACTIVATED", { tabId, windowId });
+    return;
+  }
+
+  // A selected managed tab in a focused window is user territory.
   try {
-    const tab = await chrome.tabs.get(tabId);
-    if (!T.isChannelUrl?.(tab?.url)) return;
-    await pokeChannelTab(tabId);
+    await chrome.tabs.sendMessage(tabId, { type: "TTM_ENFORCE_PAUSE" });
+    await event("ACTIVE_MANAGED_TAB_PROTECTED", { tabId, windowId, managerWindowFocused: true });
   } catch {}
+});
+
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  if (!isManagerEnabled()) return;
+  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (!managerInfo?.exists) return;
+
+  if (Number(windowId) === Number(managerInfo.windowId)) {
+    // The user deliberately focused the playback window. Protect whichever
+    // managed tab is active there until they leave the window again.
+    try {
+      const [active] = await chrome.tabs.query({ windowId: managerInfo.windowId, active: true });
+      if (active?.id && T.isManaged?.(active.id)) {
+        await chrome.tabs.sendMessage(active.id, { type: "TTM_ENFORCE_PAUSE" }).catch(() => {});
+        await event("MANAGER_WINDOW_USER_FOCUSED", { windowId, tabId: active.id });
+      }
+    } catch {}
+    return;
+  }
+
+  // Focus returned to a normal window. Opportunistically clear any orphan raid
+  // redirects, then resume the active stream without focusing the manager window.
+  cleanupManagerWindowOrphanRaidTabs("focus_return_sweep").catch(() => {});
+  setTimeout(async () => {
+    try {
+      const fresh = await getManagerWindowInfo();
+      if (!fresh?.exists || fresh.focused) return;
+      const [active] = await chrome.tabs.query({ windowId: fresh.windowId, active: true });
+      if (active?.id && T.isManaged?.(active.id)) {
+        await pokeChannelTab(active.id);
+        await event("MANAGER_WINDOW_BACKGROUND_CONTROL_RESUMED", {
+          managerWindowId: fresh.windowId,
+          tabId: active.id,
+          userWindowId: windowId
+        });
+      }
+    } catch {}
+  }, 750);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, send) => {
   (async () => {
     await bootOnce();
     const kind = normalizeType(msg?.type);
+
+    if (kind === "ttm_page_state") {
+      const tabId = sender?.tab?.id;
+      if (tabId != null) {
+        await notePageState(tabId, msg);
+        if (msg?.raid) await noteRaid(tabId, msg?.channel || "");
+      }
+      return void send({ ok: true });
+    }
+
+    if (kind === "ttm_sidebar_state") {
+      globalThis.bgLive?.updateSidebarState?.(msg, sender?.tab?.id ?? null);
+      return void send({ ok: true });
+    }
 
     if (kind === "ping") {
       return void send({
@@ -203,6 +394,9 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
 
       const tabId = sender?.tab?.id;
       if (tabId != null) {
+        if (!T.isManaged?.(tabId)) {
+          return void send({ ok: true, ignored: "unmanaged_tab" });
+        }
         const prev = getPlayerStatus(tabId);
 
         const next = {
@@ -224,14 +418,12 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
           (
             !next.hasVideo ||
             next.paused ||
-            next.muted ||
             next.stalledStart
           );
 
         const wasBad = !!(prev && !prev.adPlaying && (
           !prev.hasVideo ||
           prev.paused ||
-          prev.muted ||
           prev.stalledStart
         ));
 
@@ -242,6 +434,23 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
         }
 
         rememberPlayerStatus(tabId, next);
+        const beforeRec = getTabRecord(tabId);
+        const updatedRec = await notePlayerState(tabId, {
+          ...next,
+          playerElement: !!msg?.playerElement,
+          networkState: Number(msg?.networkState ?? -1),
+          progressAgeMs: Number(msg?.progressAgeMs ?? -1),
+          url: msg?.url || sender?.tab?.url || ""
+        });
+
+        if (updatedRec?.lifecycle === "playing" && beforeRec?.lifecycle !== "playing") {
+          // Keep the tab background-safe after playback verification without
+          // changing Chromium's browser-tab mute/unmute state.
+          setTimeout(async () => {
+            try { await T.makeTabBackgroundSafe?.(tabId); } catch {}
+            await pokeChannelTab(tabId).catch(() => {});
+          }, 750);
+        }
       }
 
       return void send({ ok: true });
@@ -267,6 +476,11 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
     if (kind === "channel_status") {
       if (!isManagerEnabled()) {
         return void send({ ok: true, ignored: "disabled" });
+      }
+
+      const tabId = sender?.tab?.id;
+      if (!T.isManaged?.(tabId)) {
+        return void send({ ok: true, ignored: "unmanaged_tab" });
       }
 
       const login = T.loginFromSenderOrMessage(sender, msg);
@@ -299,6 +513,16 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
         return void send({ ok: true, ignored: "disabled" });
       }
 
+      const tabId = sender?.tab?.id;
+      if (!T.isManaged?.(tabId)) {
+        const managerInfo = await getManagerWindowInfo().catch(() => null);
+        if (managerInfo?.exists && Number(sender?.tab?.windowId) === Number(managerInfo.windowId)) {
+          const closed = await closeManagerWindowOrphanRaidTab(tabId, "runtime_message_raid_cleanup");
+          return void send({ ok: true, closed_orphan_manager_raid: !!closed });
+        }
+        return void send({ ok: true, ignored: "unmanaged_tab" });
+      }
+
       const login = T.loginFromSenderOrMessage(sender, msg);
       if (!login) {
         return void send({ ok: false, error: "missing_login" });
@@ -309,8 +533,8 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
         return void send({ ok: true, closed_now: true });
       }
 
-      scheduleRaidClose(login);
-      return void send({ ok: true, scheduled: true, delay_ms: T.RAID_CLOSE_DELAY_MS });
+      scheduleOwnedRaidTabClose(tabId, 30000);
+      return void send({ ok: true, scheduled: true, delay_ms: 30000 });
     }
 
     return void send({
@@ -330,5 +554,10 @@ chrome.runtime.onMessage.addListener((msg, sender, send) => {
 });
 
 bootOnce()
-  .then(() => initStreakRescue())
+  .then(async () => {
+    await initRegistry();
+    await armWatchdog();
+    await initStreakRescue();
+    await runWatchdog();
+  })
   .catch((e) => T.log?.("boot_err", String(e)));

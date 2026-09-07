@@ -33,7 +33,8 @@ export const CFG_DEFAULT = {
   rotation_include_low_priority: false,
 
   streak_rescue_enabled: false,
-  streak_rescue_mode: "detect",
+  streak_rescue_mode: "auto",
+  streak_rescue_detect_only_explicit: false,
   streak_rescue_slots: 1,
   streak_rescue_required_watch_min: 5,
   streak_rescue_grace_min: 10,
@@ -89,7 +90,16 @@ export function clampConfig(input) {
   cfg.rotation_include_low_priority = parseBool(cfg.rotation_include_low_priority, false);
 
   cfg.streak_rescue_enabled = parseBool(cfg.streak_rescue_enabled, false);
-  cfg.streak_rescue_mode = String(cfg.streak_rescue_mode || "detect").toLowerCase() === "auto" ? "auto" : "detect";
+  cfg.streak_rescue_detect_only_explicit = parseBool(cfg.streak_rescue_detect_only_explicit, false);
+  cfg.streak_rescue_mode = String(cfg.streak_rescue_mode || "auto").toLowerCase() === "detect" ? "detect" : "auto";
+  // Older builds defaulted enabled rescue to detect-only, which looked like
+  // "rescue is broken" because no VOD was ever opened. Migrate that old
+  // implicit state to Automatic. Detect-only remains available when the user
+  // explicitly selects it in the new UI.
+  if (cfg.streak_rescue_enabled && cfg.streak_rescue_mode === "detect" && !cfg.streak_rescue_detect_only_explicit) {
+    cfg.streak_rescue_mode = "auto";
+  }
+  if (cfg.streak_rescue_mode === "auto") cfg.streak_rescue_detect_only_explicit = false;
   cfg.streak_rescue_slots = 1;
   cfg.streak_rescue_required_watch_min = Math.max(5, Number(cfg.streak_rescue_required_watch_min || 5) || 5);
   cfg.streak_rescue_grace_min = Math.max(0, Number(cfg.streak_rescue_grace_min ?? 10) || 0);
@@ -103,6 +113,20 @@ export function clampConfig(input) {
     ...(cfg.rotation || []),
     ...(cfg.low_priority || [])
   ]);
+
+  const configured = new Set(uniqNames([
+    ...(cfg.favorites || []), ...(cfg.priority || []), ...(cfg.follows || []),
+    ...(cfg.rotation || []), ...(cfg.low_priority || []), ...(cfg.blacklist || [])
+  ]));
+  const now = Date.now();
+  const prunedWhitelist = {};
+  for (const [raw, rawExpiry] of Object.entries(cfg.temp_whitelist_entries || {})) {
+    const login = String(raw || "").trim().toLowerCase();
+    const expiry = Number(rawExpiry || 0);
+    if (!login || !Number.isFinite(expiry) || expiry <= now || configured.has(login)) continue;
+    prunedWhitelist[login] = expiry;
+  }
+  cfg.temp_whitelist_entries = prunedWhitelist;
 
   return cfg;
 }
@@ -139,6 +163,7 @@ function getLegacyFlatConfig(bag = {}) {
     rotation_include_low_priority: bag.rotation_include_low_priority,
     streak_rescue_enabled: bag.streak_rescue_enabled,
     streak_rescue_mode: bag.streak_rescue_mode,
+    streak_rescue_detect_only_explicit: bag.streak_rescue_detect_only_explicit,
     streak_rescue_slots: bag.streak_rescue_slots,
     streak_rescue_required_watch_min: bag.streak_rescue_required_watch_min,
     streak_rescue_grace_min: bag.streak_rescue_grace_min,
@@ -160,13 +185,10 @@ export function browserBagHasMeaningfulConfig(bag = {}) {
 
   const legacy = getLegacyFlatConfig(bag);
 
-  const listHasData =
-    (Array.isArray(nested.follows) && nested.follows.length > 0) ||
-    (Array.isArray(nested.priority) && nested.priority.length > 0) ||
-    (Array.isArray(nested.blacklist) && nested.blacklist.length > 0) ||
-    (Array.isArray(legacy.follows) && legacy.follows.length > 0) ||
-    (Array.isArray(legacy.priority) && legacy.priority.length > 0) ||
-    (Array.isArray(legacy.blacklist) && legacy.blacklist.length > 0);
+  const listHasData = [
+    nested.favorites, nested.priority, nested.follows, nested.rotation, nested.low_priority, nested.blacklist,
+    legacy.favorites, legacy.priority, legacy.follows, legacy.rotation, legacy.low_priority, legacy.blacklist
+  ].some((v) => Array.isArray(v) && v.length > 0);
 
   const scalarHasData = [
     nested.client_id,
@@ -178,13 +200,7 @@ export function browserBagHasMeaningfulConfig(bag = {}) {
     legacy.access_token,
     legacy.live_source,
     legacy.check_interval_sec,
-    legacy.max_tabs,
-    nested.favorites,
-    nested.rotation,
-    nested.low_priority,
-    legacy.favorites,
-    legacy.rotation,
-    legacy.low_priority
+    legacy.max_tabs
   ].some((v) => v !== undefined && v !== null && String(v) !== "");
 
   return listHasData || scalarHasData;
@@ -359,6 +375,7 @@ export async function writeConfigEverywhere(cfg, { reason = "manual_save", skipP
     rotation_include_low_priority: clean.rotation_include_low_priority,
     streak_rescue_enabled: clean.streak_rescue_enabled,
     streak_rescue_mode: clean.streak_rescue_mode,
+    streak_rescue_detect_only_explicit: clean.streak_rescue_detect_only_explicit,
     streak_rescue_slots: clean.streak_rescue_slots,
     streak_rescue_required_watch_min: clean.streak_rescue_required_watch_min,
     streak_rescue_grace_min: clean.streak_rescue_grace_min,
@@ -370,6 +387,12 @@ export async function writeConfigEverywhere(cfg, { reason = "manual_save", skipP
     priority_count: clean.priority.length,
     followUnion_count: clean.followUnion.length
   });
+
+  const verify = await chrome.storage.local.get("ttm_settings_v1");
+  const readBack = clampConfig(verify.ttm_settings_v1 || {});
+  if (stableStringify(readBack) !== stableStringify(clean)) {
+    throw new Error("Config write verification failed. Previous backup was preserved.");
+  }
 
   await pushBackupSnapshot(buildSnapshot(clean, `after_${reason}`));
   return clean;

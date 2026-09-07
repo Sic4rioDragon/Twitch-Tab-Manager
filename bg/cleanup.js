@@ -1,6 +1,11 @@
 import { state, log } from "./core.js";
-import { normalizeName, uniqNames } from "./config.js";
-import { listManaged, ensureClosed } from "./tabs.js";
+import { normalizeName, uniqNames, pruneTempWhitelistEntries, writeConfigMirrorsVerified } from "./config.js";
+import { listManaged, ensureClosed, releaseOwnedTab } from "./tabs.js";
+import {
+  getManagerWindowInfo,
+  isManagerWindowUnfocused,
+  settleManagerWindowOnHolder
+} from "./manager-window.js";
 
 const T = (globalThis.TTM = globalThis.TTM || {});
 
@@ -9,55 +14,56 @@ const REOPEN_COOLDOWN_MS = 90000;
 const RAID_CLOSE_DELAY_MS = 60000;
 const RAID_REOPEN_COOLDOWN_MS = 5 * 60 * 1000;
 const OFFLINE_CLOSE_DELAY_MS = 20000;
+const ORPHAN_OFFLINE_CLOSE_DELAY_MS = 90_000;
 
 const openedAtByChannel = new Map();
 const reopenBlockedUntilByChannel = new Map();
 const raidTimers = new Map();
+const raidTabTimers = new Map();
 const offlineTimers = new Map();
 const offlinePendingSinceByChannel = new Map();
+const orphanOfflineSeenAtByTabId = new Map();
 
 function getTempWhitelistEntries() {
-  return state.settings.temp_whitelist_entries || {};
+  const pruned = pruneTempWhitelistEntries(state.settings);
+  state.settings.temp_whitelist_entries = pruned;
+  return pruned;
+}
+
+function isConfiguredAnywhere(login) {
+  const key = normalizeName(login);
+  if (!key) return false;
+  return ["favorites", "priority", "follows", "rotation", "low_priority", "blacklist"]
+    .some((bucket) => Array.isArray(state.settings[bucket]) && state.settings[bucket].includes(key));
 }
 
 function isTemporarilyAllowed(login) {
   const key = normalizeName(login);
-  if (!key) return false;
-
+  if (!key || isConfiguredAnywhere(key)) return false;
   const entries = getTempWhitelistEntries();
   const expiresAt = Number(entries[key] || 0);
-  if (!expiresAt) return false;
-
-  if (Date.now() >= expiresAt) {
-    delete entries[key];
-    state.settings.temp_whitelist_entries = entries;
-    chrome.storage.local.set({
-      settings: state.settings,
-      config: state.settings,
-      temp_whitelist_entries: entries
-    }).catch(() => {});
-    return false;
-  }
-
-  return true;
+  return !!expiresAt && Date.now() < expiresAt;
 }
 
 async function tempAllowChannel(login) {
   const key = normalizeName(login);
   if (!key) return false;
 
+  if (isConfiguredAnywhere(key)) {
+    const entries = getTempWhitelistEntries();
+    if (entries[key]) delete entries[key];
+    state.settings.temp_whitelist_entries = entries;
+    try { await writeConfigMirrorsVerified(state.settings); } catch {}
+    log("temp_whitelist_skip_configured", { login: key });
+    return false;
+  }
+
   const hours = Math.max(1, Number(state.settings.temp_whitelist_hours || 12) || 12);
   const entries = getTempWhitelistEntries();
   entries[key] = Date.now() + (hours * 60 * 60 * 1000);
-
   state.settings.temp_whitelist_entries = entries;
 
-  await chrome.storage.local.set({
-    settings: state.settings,
-    config: state.settings,
-    temp_whitelist_entries: entries
-  });
-
+  await writeConfigMirrorsVerified(state.settings);
   log("temp_whitelist_added", { login: key, hours });
   return true;
 }
@@ -65,6 +71,23 @@ async function tempAllowChannel(login) {
 function isRaidLikeUrl(url = "") {
   const value = String(url || "").toLowerCase();
   return value.includes("referrer=raid");
+}
+
+function channelFromTwitchUrl(url = "") {
+  try {
+    const parsed = new URL(String(url || ""));
+    if (!/^(www\.)?twitch\.tv$/i.test(parsed.hostname)) return "";
+    const first = parsed.pathname.replace(/^\/+/, "").split("/")[0] || "";
+    const key = normalizeName(first);
+    if (!key) return "";
+    if ([
+      "directory", "downloads", "jobs", "p", "settings", "subscriptions",
+      "inventory", "wallet", "videos", "schedule", "about"
+    ].includes(key)) return "";
+    return key;
+  } catch {
+    return "";
+  }
 }
 
 function isManagerEnabled() {
@@ -133,7 +156,7 @@ async function closeManagedChannelTab(login, reason = "manual", cooldownMs = REO
   }
 
   try {
-    const closed = await ensureClosed(key);
+    const closed = await ensureClosed(key, reason);
     if (closed) {
       noteManagedClosed(key, cooldownMs);
       log("closed_channel_tab", { login: key, reason, cooldownMs });
@@ -253,6 +276,305 @@ async function closeManagedChannelsThatAreNowBlocked() {
   }
 }
 
+
+async function closeOwnedRaidTab(tabId, reason = "owned_raid_redirect") {
+  const id = Number(tabId);
+  if (!id || !T.isManaged?.(id)) return false;
+
+  let tab;
+  try { tab = await chrome.tabs.get(id); } catch { return false; }
+  const url = tab?.url || tab?.pendingUrl || "";
+  if (!isRaidLikeUrl(url)) return false;
+
+  if (tab?.active && !(await isManagerWindowUnfocused(tab.windowId))) {
+    log("raid_tab_close_suppressed_active", { tabId: id, url, reason });
+    return false;
+  }
+
+  try {
+    await chrome.tabs.remove(id);
+    await releaseOwnedTab(id, reason);
+    log("owned_raid_tab_closed", { tabId: id, url, reason });
+    return true;
+  } catch (e) {
+    log("owned_raid_tab_close_error", { tabId: id, url, reason, error: String(e) });
+    return false;
+  }
+}
+
+function clearOwnedRaidTabTimer(tabId) {
+  const id = Number(tabId);
+  const timer = raidTabTimers.get(id);
+  if (timer) clearTimeout(timer);
+  raidTabTimers.delete(id);
+}
+
+function scheduleOwnedRaidTabClose(tabId, delayMs = 30000) {
+  const id = Number(tabId);
+  if (!id || !isManagerEnabled()) return;
+  clearOwnedRaidTabTimer(id);
+
+  const timer = setTimeout(async () => {
+    raidTabTimers.delete(id);
+    const closed = await closeOwnedRaidTab(id, "raid_redirect_timer");
+    if (!closed) {
+      // If the user was looking at the raid tab, do not fight their selection.
+      // Try again later after they have moved away.
+      try {
+        const tab = await chrome.tabs.get(id);
+        if (tab?.active && isRaidLikeUrl(tab?.url || tab?.pendingUrl || "")) {
+          scheduleOwnedRaidTabClose(id, 30000);
+        }
+      } catch {}
+    }
+  }, Math.max(5000, Number(delayMs || 30000)));
+
+  raidTabTimers.set(id, timer);
+  log("owned_raid_tab_close_scheduled", { tabId: id, delayMs: Math.max(5000, Number(delayMs || 30000)) });
+}
+
+async function closeManagerWindowOrphanRaidTab(tabId, reason = "manager_orphan_raid") {
+  const id = Number(tabId || 0);
+  if (!id || T.isManaged?.(id)) return false;
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (!managerInfo?.exists) return false;
+
+  let tab;
+  try { tab = await chrome.tabs.get(id); } catch { return false; }
+  const url = tab?.url || tab?.pendingUrl || "";
+  if (Number(tab?.windowId) !== Number(managerInfo.windowId)) return false;
+  if (!isRaidLikeUrl(url)) return false;
+
+  // The dedicated playback window is entirely TTM-owned space. Unlike normal
+  // user windows, an unmanaged raid redirect here is always safe to remove.
+  // Put manager.html back on top first so closing an internally-active raid
+  // never leaves another random Twitch tab selected.
+  if (tab.active) {
+    await settleManagerWindowOnHolder("orphan_raid_cleanup").catch(() => false);
+  }
+
+  try {
+    await chrome.tabs.remove(id);
+    log("manager_orphan_raid_closed", {
+      tabId: id,
+      windowId: managerInfo.windowId,
+      url,
+      reason
+    });
+    return true;
+  } catch (e) {
+    log("manager_orphan_raid_close_error", {
+      tabId: id,
+      windowId: managerInfo.windowId,
+      url,
+      reason,
+      error: String(e)
+    });
+    return false;
+  }
+}
+
+async function cleanupManagerWindowOrphanRaidTabs(reason = "manager_raid_sweep") {
+  if (!isManagerEnabled()) return { cleaned: 0, skipped: "disabled" };
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (!managerInfo?.exists) return { cleaned: 0, skipped: "no_manager_window" };
+
+  try {
+    const tabs = await chrome.tabs.query({ windowId: Number(managerInfo.windowId) });
+    const candidates = tabs.filter((tab) => {
+      const url = tab?.url || tab?.pendingUrl || "";
+      return !!tab?.id && !T.isManaged?.(tab.id) && isRaidLikeUrl(url);
+    });
+
+    if (!candidates.length) return { candidates: 0, cleaned: 0 };
+
+    if (candidates.some((tab) => tab.active)) {
+      await settleManagerWindowOnHolder("orphan_raid_sweep").catch(() => false);
+    }
+
+    let cleaned = 0;
+    for (const tab of candidates.slice(0, 25)) {
+      if (await closeManagerWindowOrphanRaidTab(tab.id, reason)) cleaned += 1;
+    }
+
+    log("manager_orphan_raid_cleanup", {
+      windowId: managerInfo.windowId,
+      candidates: candidates.length,
+      cleaned,
+      reason
+    });
+    return { candidates: candidates.length, cleaned };
+  } catch (e) {
+    log("manager_orphan_raid_cleanup_error", { reason, error: String(e) });
+    return { cleaned: 0, error: String(e) };
+  }
+}
+
+async function cleanupManagerWindowOrphanOfflineTabs({
+  offline = [],
+  unknown = [],
+  live = []
+} = {}, reason = "manager_orphan_offline_sweep") {
+  if (!isManagerEnabled()) return { cleaned: 0, skipped: "disabled" };
+
+  const managerInfo = await getManagerWindowInfo().catch(() => null);
+  if (!managerInfo?.exists) return { cleaned: 0, skipped: "no_manager_window" };
+
+  const offlineSet = new Set(uniqNames(offline));
+  const unknownSet = new Set(uniqNames(unknown));
+  const liveSet = new Set(uniqNames(live));
+  const now = Date.now();
+
+  try {
+    const tabs = await chrome.tabs.query({ windowId: Number(managerInfo.windowId) });
+    const seenIds = new Set(tabs.map((tab) => Number(tab?.id || 0)).filter(Boolean));
+
+    for (const tabId of [...orphanOfflineSeenAtByTabId.keys()]) {
+      if (!seenIds.has(Number(tabId))) orphanOfflineSeenAtByTabId.delete(Number(tabId));
+    }
+
+    let candidates = 0;
+    let cleaned = 0;
+
+    for (const tab of tabs) {
+      const tabId = Number(tab?.id || 0);
+      if (!tabId || T.isManaged?.(tabId)) {
+        orphanOfflineSeenAtByTabId.delete(tabId);
+        continue;
+      }
+
+      const url = tab?.url || tab?.pendingUrl || "";
+      if (isRaidLikeUrl(url)) {
+        orphanOfflineSeenAtByTabId.delete(tabId);
+        continue;
+      }
+
+      const login = channelFromTwitchUrl(url);
+      if (!login) {
+        orphanOfflineSeenAtByTabId.delete(tabId);
+        continue;
+      }
+
+      // Confirmed LIVE is the only result that clears an existing offline clock.
+      // UNKNOWN preserves a clock that already started but cannot start/finish a
+      // close by itself. This survives Twitch's OFFLINE -> UNKNOWN -> OFFLINE
+      // probe wobble without treating UNKNOWN as proof that a stream ended.
+      if (liveSet.has(login)) {
+        orphanOfflineSeenAtByTabId.delete(tabId);
+        continue;
+      }
+      if (unknownSet.has(login) || !offlineSet.has(login)) {
+        continue;
+      }
+
+      candidates += 1;
+      const firstSeen = Number(orphanOfflineSeenAtByTabId.get(tabId) || 0);
+      if (!firstSeen) {
+        orphanOfflineSeenAtByTabId.set(tabId, now);
+        log("manager_orphan_offline_seen", {
+          tabId,
+          login,
+          windowId: managerInfo.windowId,
+          closeAfterMs: ORPHAN_OFFLINE_CLOSE_DELAY_MS,
+          reason
+        });
+        continue;
+      }
+
+      if (now - firstSeen < ORPHAN_OFFLINE_CLOSE_DELAY_MS) continue;
+
+      // If the user deliberately focused the playback window and selected this
+      // tab, do not close it under their cursor. An internally-active tab in an
+      // unfocused manager window is still manager-owned workspace and is safe.
+      if (tab.active && managerInfo.focused) {
+        log("manager_orphan_offline_close_suppressed_user_focused", {
+          tabId,
+          login,
+          windowId: managerInfo.windowId,
+          pendingMs: now - firstSeen,
+          reason
+        });
+        continue;
+      }
+
+      try {
+        await chrome.tabs.remove(tabId);
+        orphanOfflineSeenAtByTabId.delete(tabId);
+        cleaned += 1;
+        noteManagedClosed(login, REOPEN_COOLDOWN_MS);
+        log("manager_orphan_offline_closed", {
+          tabId,
+          login,
+          windowId: managerInfo.windowId,
+          pendingMs: now - firstSeen,
+          reason
+        });
+      } catch (e) {
+        log("manager_orphan_offline_close_error", {
+          tabId,
+          login,
+          windowId: managerInfo.windowId,
+          error: String(e),
+          reason
+        });
+      }
+    }
+
+    if (candidates || cleaned) {
+      log("manager_orphan_offline_cleanup", {
+        windowId: managerInfo.windowId,
+        candidates,
+        cleaned,
+        delayMs: ORPHAN_OFFLINE_CLOSE_DELAY_MS,
+        reason
+      });
+    }
+
+    return { candidates, cleaned };
+  } catch (e) {
+    log("manager_orphan_offline_cleanup_error", { reason, error: String(e) });
+    return { cleaned: 0, error: String(e) };
+  }
+}
+
+async function cleanupLegacyOrphanRaidTabs() {
+  const FLAG = "ttm_v1013_orphan_raid_cleanup_done";
+  try {
+    const got = await chrome.storage.local.get(FLAG);
+    if (got?.[FLAG]) return { cleaned: 0, skipped: "already_done" };
+
+    const tabs = await chrome.tabs.query({
+      url: ["*://www.twitch.tv/*", "*://twitch.tv/*"]
+    });
+    const candidates = tabs.filter((tab) => {
+      const url = tab?.url || tab?.pendingUrl || "";
+      return !!tab?.id && !tab.active && !T.isManaged?.(tab.id) && isRaidLikeUrl(url);
+    });
+
+    let cleaned = 0;
+    // One stale raid URL may be a legitimate user tab. Multiple inactive raid
+    // URLs are the v1.0.12 ownership-leak signature, so only auto-clean then.
+    if (candidates.length >= 2) {
+      for (const tab of candidates.slice(0, 25)) {
+        try {
+          await chrome.tabs.remove(tab.id);
+          cleaned += 1;
+          log("legacy_orphan_raid_closed", { tabId: tab.id, url: tab.url || tab.pendingUrl || "" });
+        } catch {}
+      }
+    }
+
+    await chrome.storage.local.set({ [FLAG]: true });
+    log("legacy_orphan_raid_cleanup", { candidates: candidates.length, cleaned });
+    return { candidates: candidates.length, cleaned };
+  } catch (e) {
+    log("legacy_orphan_raid_cleanup_error", String(e));
+    return { cleaned: 0, error: String(e) };
+  }
+}
+
 async function closeSenderTabIfNowUnwanted(sender, reason = "drifted_unwanted") {
   if (!isManagerEnabled()) return false;
 
@@ -260,6 +582,11 @@ async function closeSenderTabIfNowUnwanted(sender, reason = "drifted_unwanted") 
   const currentUrl = sender?.tab?.url || sender?.tab?.pendingUrl || "";
   const currentLogin = T.channelFromUrl(currentUrl);
   if (!tabId || !currentLogin) return false;
+
+  if (sender?.tab?.active && !(await isManagerWindowUnfocused(sender?.tab?.windowId))) {
+    log("sender_close_suppressed_active_user_tab", { tabId, login: currentLogin, reason });
+    return false;
+  }
 
   if (isTemporarilyAllowed(currentLogin)) {
     return false;
@@ -275,6 +602,7 @@ async function closeSenderTabIfNowUnwanted(sender, reason = "drifted_unwanted") 
   if (isBlocked) {
     try {
       await chrome.tabs.remove(tabId);
+      if (T.isManaged?.(tabId)) await releaseOwnedTab(tabId, "blacklist");
       noteManagedClosed(currentLogin, RAID_REOPEN_COOLDOWN_MS);
       log("closed_sender_tab_now_unwanted", { tabId, login: currentLogin, reason: "blacklist" });
       return true;
@@ -294,6 +622,7 @@ async function closeSenderTabIfNowUnwanted(sender, reason = "drifted_unwanted") 
 
     try {
       await chrome.tabs.remove(tabId);
+      if (T.isManaged?.(tabId)) await releaseOwnedTab(tabId, reason);
       noteManagedClosed(currentLogin, RAID_REOPEN_COOLDOWN_MS);
       log("closed_sender_tab_now_unwanted", { tabId, login: currentLogin, reason });
       return true;
@@ -326,6 +655,12 @@ T.isReopenBlocked = isReopenBlocked;
 T.closeManagedChannelTab = closeManagedChannelTab;
 T.scheduleOfflineClose = scheduleOfflineClose;
 T.scheduleRaidClose = scheduleRaidClose;
+T.closeOwnedRaidTab = closeOwnedRaidTab;
+T.scheduleOwnedRaidTabClose = scheduleOwnedRaidTabClose;
+T.closeManagerWindowOrphanRaidTab = closeManagerWindowOrphanRaidTab;
+T.cleanupManagerWindowOrphanRaidTabs = cleanupManagerWindowOrphanRaidTabs;
+T.cleanupManagerWindowOrphanOfflineTabs = cleanupManagerWindowOrphanOfflineTabs;
+T.cleanupLegacyOrphanRaidTabs = cleanupLegacyOrphanRaidTabs;
 T.closeManagedChannelsThatAreNowBlocked = closeManagedChannelsThatAreNowBlocked;
 T.closeSenderTabIfNowUnwanted = closeSenderTabIfNowUnwanted;
 
@@ -335,6 +670,7 @@ export {
   RAID_CLOSE_DELAY_MS,
   RAID_REOPEN_COOLDOWN_MS,
   OFFLINE_CLOSE_DELAY_MS,
+  ORPHAN_OFFLINE_CLOSE_DELAY_MS,
   getTempWhitelistEntries,
   isTemporarilyAllowed,
   tempAllowChannel,
@@ -349,6 +685,12 @@ export {
   closeManagedChannelTab,
   scheduleOfflineClose,
   scheduleRaidClose,
+  closeOwnedRaidTab,
+  scheduleOwnedRaidTabClose,
+  closeManagerWindowOrphanRaidTab,
+  cleanupManagerWindowOrphanRaidTabs,
+  cleanupManagerWindowOrphanOfflineTabs,
+  cleanupLegacyOrphanRaidTabs,
   closeManagedChannelsThatAreNowBlocked,
   closeSenderTabIfNowUnwanted
 };

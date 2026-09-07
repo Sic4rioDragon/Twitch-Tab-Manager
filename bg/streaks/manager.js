@@ -1,4 +1,5 @@
 import { log } from "../core.js";
+import { createBackgroundTab, navigateBackgroundTab, makeBackgroundSafe } from "../browser/tabs.js";
 import {
   streakState,
   ABSENT_CONFIRMATIONS_REQUIRED,
@@ -17,8 +18,11 @@ import {
   pruneQueue,
   enqueue,
   nextReadyQueueItem,
-  addHistory
+  addHistory,
+  updateWatchBadges,
+  getWatchStreakBadge
 } from "./state.js";
+import { ensureManagerWindow, isManagerWindowId, isManagerWindowUnfocused, queueManagerTabPrime } from "../manager-window.js";
 
 function sameTwitchPage(a, b) {
   try {
@@ -27,6 +31,84 @@ function sameTwitchPage(a, b) {
     return ua.hostname === ub.hostname && ua.pathname === ub.pathname;
   } catch {
     return String(a || "") === String(b || "");
+  }
+}
+
+async function keepRescueTabBackgroundSafe(tabId) {
+  if (tabId == null) return;
+  await makeBackgroundSafe(tabId);
+}
+
+async function backgroundRescueWake(tabId, reason = "streak_recovery", { renavigate = false } = {}) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.active && !(await isManagerWindowUnfocused(tab.windowId))) {
+      log("streak_rescue_wake_suppressed_user_active", { tabId, reason });
+      return false;
+    }
+
+    await keepRescueTabBackgroundSafe(tabId);
+
+    // A rescue VOD is disposable TTM-owned work. If it has made no playback
+    // progress, background re-navigation is a safer recovery than activating
+    // the tab or focusing its window. Normal managed live streams are not
+    // reloaded by this path.
+    if (renavigate && streakState.active?.tab_id === tabId && streakState.active?.url) {
+      await navigateBackgroundTab(tabId, streakState.active.url);
+    }
+
+    await injectStreakHelper(tabId);
+    if (streakState.active?.tab_id === tabId) {
+      await sendControl(tabId, true, streakState.active);
+    }
+
+    log("streak_rescue_background_wake", { tabId, reason, renavigate: !!renavigate });
+    return true;
+  } catch (e) {
+    log("streak_rescue_background_wake_error", { tabId, reason, error: String(e) });
+    return false;
+  }
+}
+
+
+function scheduleRescuePrimeFallback(tabId) {
+  for (const delay of [8000, 65000]) {
+    setTimeout(async () => {
+      try {
+        await loadState();
+        const active = streakState.active;
+        if (!active || active.tab_id !== tabId) return;
+        if (Number(active.last_progress_at || 0) > 0 || Number(active.watched_ms || 0) > 0) return;
+
+        const primed = await queueManagerTabPrime(tabId, "streak_rescue_no_playback", { dwellMs: 6000 });
+        if (!primed) return;
+
+        // Re-assert the rescue helper/control as soon as Twitch has had a short
+        // genuinely-active render cycle inside the hidden manager window.
+        await injectStreakHelper(tabId);
+        await loadState();
+        if (streakState.active?.tab_id === tabId) {
+          await sendControl(tabId, true, streakState.active);
+        }
+        log("streak_rescue_internal_prime", { tabId, delayMs: delay });
+      } catch (e) {
+        log("streak_rescue_internal_prime_error", { tabId, delayMs: delay, error: String(e) });
+      }
+    }, delay);
+  }
+}
+function scheduleRescueRepokes(tabId) {
+  for (const delay of [1500, 5000, 12000, 25000]) {
+    setTimeout(async () => {
+      try {
+        await keepRescueTabBackgroundSafe(tabId);
+        await injectStreakHelper(tabId);
+        await loadState();
+        if (streakState.active?.tab_id === tabId) {
+          await sendControl(tabId, true, streakState.active);
+        }
+      } catch {}
+    }, delay);
   }
 }
 
@@ -72,8 +154,20 @@ async function startRescue(item, reuseTabId = null) {
 
   let tabId = reuseTabId;
   try {
-    if (tabId != null) await chrome.tabs.update(tabId, { url: clean.url, active: false });
-    else tabId = (await chrome.tabs.create({ url: clean.url, active: false })).id;
+    const managerWindow = await ensureManagerWindow();
+
+    if (tabId != null) {
+      let reuse = null;
+      try { reuse = await chrome.tabs.get(tabId); } catch {}
+      if (!reuse || !isManagerWindowId(reuse.windowId)) {
+        if (reuse?.id) { try { await chrome.tabs.remove(reuse.id); } catch {} }
+        tabId = null;
+      }
+    }
+
+    if (tabId != null) await navigateBackgroundTab(tabId, clean.url);
+    else tabId = (await createBackgroundTab(clean.url, { windowId: managerWindow.windowId })).id;
+    await keepRescueTabBackgroundSafe(tabId);
   } catch (e) {
     log("streak_rescue_open_error", { channel: clean.channel, error: String(e) });
     clean.not_before = Date.now() + retryMs();
@@ -108,10 +202,11 @@ async function startRescue(item, reuseTabId = null) {
     required_min: Math.round(requiredWatchMs() / 60000)
   });
 
-  setTimeout(async () => {
-    await injectStreakHelper(tabId);
-    await sendControl(tabId, true, streakState.active);
-  }, 1500);
+  // Send rescue control immediately and then repoke a few times while Twitch's
+  // SPA/player settles. This never activates the rescue tab.
+  backgroundRescueWake(tabId, "startup", { renavigate: false }).catch(() => {});
+  scheduleRescueRepokes(tabId);
+  scheduleRescuePrimeFallback(tabId);
   return true;
 }
 
@@ -164,6 +259,13 @@ export async function handleStreakScan(msg, sender) {
   streakState.last_scan_at = now;
   streakState.last_scan_tab_id = sender?.tab?.id ?? null;
   streakState.last_scan_count = incoming.length;
+  streakState.last_scan_url = String(msg?.url || sender?.tab?.url || "");
+  streakState.last_scan_ready = !!msg?.scan_ready;
+  streakState.last_scan_sidebar_present = !!msg?.sidebar_present;
+  streakState.last_scan_group_present = !!msg?.group_present;
+  streakState.last_scan_candidate_count = Math.max(0, Number(msg?.candidate_count || 0) || 0);
+  streakState.last_scan_helper_version = Math.max(0, Number(msg?.helper_version || 0) || 0);
+  updateWatchBadges(msg?.watch_streaks || [], !!msg?.watch_streak_scan_ready);
   for (const item of incoming) enqueue(item);
   pruneQueue();
 
@@ -171,9 +273,14 @@ export async function handleStreakScan(msg, sender) {
   if (active && active.required_reached_at) {
     const targetStillListed = incoming.some((x) => x.channel === active.channel);
     const validScan = !!msg?.scan_ready && (!!msg?.group_present || !!msg?.sidebar_present);
+    const watchBadge = getWatchStreakBadge(active.channel);
 
     if (targetStillListed) active.absent_confirmations = 0;
-    else if (validScan) {
+    else if (validScan && watchBadge && Number(watchBadge.streak || 0) >= Number(active.streak || 0)) {
+      await saveState();
+      await finishActive("rescued_confirmed_watch_streak");
+      return { ok: true, confirmed: true, via: "watch_streak_badge" };
+    } else if (validScan) {
       const everyMs = Math.max(15, Number(cfg().streak_rescue_confirm_check_sec || 30)) * 1000;
       if (now - Number(active.last_confirm_check_at || 0) >= everyMs) {
         active.last_confirm_check_at = now;
@@ -258,6 +365,17 @@ export async function runStreakRescueTick() {
   if (active) {
     let tab = null;
     try { tab = await chrome.tabs.get(active.tab_id); } catch {}
+    if (tab) {
+      await keepRescueTabBackgroundSafe(active.tab_id);
+      if (tab.discarded) {
+        const woke = await backgroundRescueWake(active.tab_id, "discarded", { renavigate: true });
+        if (woke) {
+          active.last_reload_at = Date.now();
+          await saveState();
+          scheduleRescueRepokes(active.tab_id);
+        }
+      }
+    }
     if (!tab) {
       await handleRescueTabRemoved(active.tab_id);
       if (automatic()) await ensureActiveRescue();
@@ -267,12 +385,14 @@ export async function runStreakRescueTick() {
     const now = Date.now();
     const noProgressFor = active.last_progress_at ? now - active.last_progress_at : now - active.started_at;
     if (noProgressFor >= NO_PROGRESS_RELOAD_MS && now - Number(active.last_reload_at || 0) >= NO_PROGRESS_RELOAD_MS) {
-      try {
-        await chrome.tabs.reload(active.tab_id);
+      const woke = await backgroundRescueWake(active.tab_id, "no_progress", { renavigate: true });
+      if (woke) {
         active.last_reload_at = now;
+        active.playback_ok = false;
         await saveState();
-        log("streak_rescue_background_reload", { channel: active.channel, tabId: active.tab_id });
-      } catch {}
+        scheduleRescueRepokes(active.tab_id);
+        scheduleRescuePrimeFallback(active.tab_id);
+      }
     }
 
     if (now - active.started_at >= HARD_FAIL_WALL_MS) {
@@ -295,7 +415,7 @@ export async function getStreakRescueStatus() {
   const grace = graceWatchMs();
   return {
     enabled: enabled(),
-    mode: String(cfg().streak_rescue_mode || "detect"),
+    mode: String(cfg().streak_rescue_mode || "auto"),
     required_watch_ms: required,
     grace_watch_ms: grace,
     queue_count: streakState.queue.length,
@@ -307,6 +427,16 @@ export async function getStreakRescueStatus() {
     } : null,
     last_scan_at: streakState.last_scan_at,
     last_scan_count: streakState.last_scan_count,
+    last_scan: {
+      url: streakState.last_scan_url || "",
+      ready: !!streakState.last_scan_ready,
+      sidebar_present: !!streakState.last_scan_sidebar_present,
+      group_present: !!streakState.last_scan_group_present,
+      candidate_count: Number(streakState.last_scan_candidate_count || 0),
+      helper_version: Number(streakState.last_scan_helper_version || 0),
+      tab_id: streakState.last_scan_tab_id ?? null
+    },
+    watch_streaks: Object.values(streakState.watch_badges || {}),
     history: streakState.history.slice(-10)
   };
 }
@@ -317,6 +447,7 @@ export async function initStreakRescue() {
   if (streakState.active?.tab_id != null) {
     try {
       await chrome.tabs.get(streakState.active.tab_id);
+      await keepRescueTabBackgroundSafe(streakState.active.tab_id);
       await injectStreakHelper(streakState.active.tab_id);
       await sendControl(streakState.active.tab_id, true, streakState.active);
     } catch {

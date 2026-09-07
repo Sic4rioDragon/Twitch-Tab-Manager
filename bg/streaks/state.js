@@ -4,17 +4,24 @@ const SESSION_KEY = "ttm.streak_rescue.state.v1";
 export const MAX_HISTORY = 25;
 export const MAX_QUEUE_AGE_MS = 26 * 60 * 60 * 1000;
 export const ABSENT_CONFIRMATIONS_REQUIRED = 2;
-export const NO_PROGRESS_RELOAD_MS = 2 * 60 * 1000;
-export const HARD_FAIL_WALL_MS = 35 * 60 * 1000;
+export const NO_PROGRESS_RELOAD_MS = 60 * 1000;
+export const HARD_FAIL_WALL_MS = 12 * 60 * 1000;
 
 let loaded = false;
 export let streakState = {
   queue: [],
   active: null,
   history: [],
+  watch_badges: {},
   last_scan_at: 0,
   last_scan_tab_id: null,
-  last_scan_count: 0
+  last_scan_count: 0,
+  last_scan_url: "",
+  last_scan_ready: false,
+  last_scan_sidebar_present: false,
+  last_scan_group_present: false,
+  last_scan_candidate_count: 0,
+  last_scan_helper_version: 0
 };
 
 export function cfg() {
@@ -26,7 +33,7 @@ export function enabled() {
 }
 
 export function automatic() {
-  return enabled() && String(cfg().streak_rescue_mode || "detect") === "auto";
+  return enabled() && String(cfg().streak_rescue_mode || "auto") === "auto";
 }
 
 export function requiredWatchMs() {
@@ -70,6 +77,47 @@ export function sanitizeStreak(item) {
   };
 }
 
+
+export const WATCH_STREAK_PROTECT_MAX_MS = 15 * 60 * 1000;
+
+export function updateWatchBadges(items = [], scanReady = false) {
+  const now = Date.now();
+  const incoming = new Map();
+
+  for (const raw of Array.isArray(items) ? items : []) {
+    const channel = normalizeChannel(raw?.channel);
+    const streak = Math.max(0, Number(raw?.streak || 0) || 0);
+    if (!channel) continue;
+    incoming.set(channel, streak);
+
+    const prev = streakState.watch_badges?.[channel] || {};
+    streakState.watch_badges[channel] = {
+      channel,
+      streak,
+      first_seen_at: Number(prev.first_seen_at || now),
+      last_seen_at: now
+    };
+  }
+
+  if (scanReady) {
+    for (const channel of Object.keys(streakState.watch_badges || {})) {
+      if (!incoming.has(channel)) delete streakState.watch_badges[channel];
+    }
+  }
+}
+
+export function getWatchStreakBadge(channel) {
+  const ch = normalizeChannel(channel);
+  return ch ? (streakState.watch_badges?.[ch] || null) : null;
+}
+
+export function isWatchStreakProtected(channel) {
+  const badge = getWatchStreakBadge(channel);
+  if (!badge) return false;
+  const age = Date.now() - Number(badge.first_seen_at || Date.now());
+  return age >= 0 && age < WATCH_STREAK_PROTECT_MAX_MS;
+}
+
 export async function loadState() {
   if (loaded) return streakState;
   try {
@@ -80,7 +128,8 @@ export async function loadState() {
         ...streakState,
         ...saved,
         queue: Array.isArray(saved.queue) ? saved.queue : [],
-        history: Array.isArray(saved.history) ? saved.history.slice(-MAX_HISTORY) : []
+        history: Array.isArray(saved.history) ? saved.history.slice(-MAX_HISTORY) : [],
+        watch_badges: saved.watch_badges && typeof saved.watch_badges === "object" ? saved.watch_badges : {}
       };
     }
   } catch (e) {
